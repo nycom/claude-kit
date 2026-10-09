@@ -32,7 +32,7 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
   await step('w1', { failed: true })
   expect(await shown('Pane')).toContain('FAILED ×3')
   // No flow, yet the band shows the chip.
-  expect(await shown('AbovePrompt')).toContain('⚠ 1 needs input')
+  expect(await shown('AbovePrompt')).toContain('⚠ 1 needs attention')
   expect(toasts).toEqual(['agent fix tests: failed 3 times'])
   await step('w1', { failed: true })
   expect(toasts.length).toBe(1)
@@ -48,4 +48,16 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
   // A fresh transition into attention toasts again.
   await step('w2', { blocked: 'Postgres or SQLite?' })
   expect(toasts.length).toBe(3)
+
+  // Finishing the task clears the failed streak; a fresh streak toasts again.
+  await step('w1', { done: 3, total: 3 })
+  expect(await shown('Pane')).not.toContain('FAILED')
+  await step('w1', { failed: true })
+  await step('w1', { failed: true })
+  await step('w1', { failed: true })
+  expect(toasts.length).toBe(4)
+
+  // A new run of the same task supersedes the blocked one.
+  await spawn('Pick DB')
+  expect(await shown('Pane')).not.toContain('NEEDS INPUT')
 })

@@ -68,7 +68,7 @@ const STRINGS = {
     agent: 'agent',
     toastInput: 'needs input',
     toastFailed: (n: number) => `failed ${n} times`,
-    chip: (n: number) => `⚠ ${n} ${n === 1 ? 'needs' : 'need'} input`,
+    chip: (n: number) => `⚠ ${n} ${n === 1 ? 'needs' : 'need'} attention`,
   },
   ru: {
     pane: 'Агенты',
@@ -103,7 +103,7 @@ const STRINGS = {
     agent: 'агент',
     toastInput: 'нужен ответ',
     toastFailed: (n: number) => `неудач: ${n}`,
-    chip: (n: number) => `⚠ ${n} ${n === 1 ? 'ждёт' : 'ждут'} ответа`,
+    chip: (n: number) => `⚠ ${n} ${n === 1 ? 'требует' : 'требуют'} внимания`,
   },
 } as const
 
@@ -741,7 +741,7 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: 'step',
       description:
-        'For savvy-flow workers: report progress on your own task to the agents panel. ' +
+        'For subagents: report progress on your own task to the agents panel. ' +
         'Right after reading the brief, call it with `total` (your plan in 3-8 steps) and `done: 0`; ' +
         'call it again as each step finishes. Cheap and silent: it only draws a bar, unless you flag `failed` or `blocked`.',
       inputSchema: {
@@ -815,7 +815,9 @@ export const register: Register = (on, options) => {
           stepTotal: total,
           stepDone: total ? Math.min(total, done) : done,
           stepNote: input.note?.trim() || undefined,
-          failedAttempts: (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
+          // A finished task (done >= total, not failing) ends the failed streak.
+          failedAttempts:
+            input.failed !== true && total > 0 && done >= total ? undefined : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
           blocked: (typeof input.blocked === 'string' && input.blocked.trim()) || undefined,
         }
         // Toast on each transition into attention; the same reason never twice in a row.
@@ -869,7 +871,11 @@ export const register: Register = (on, options) => {
         steps: 0,
         round,
       }
-      return [...list.filter(a => a.id !== run.id), run].slice(-200)
+      // A new round of the same task supersedes the earlier runs' flags.
+      const earlier = list
+        .filter(a => a.id !== run.id)
+        .map(a => (round > 1 && norm(a.description) === norm(e.description) ? { ...a, blocked: undefined, failedAttempts: undefined, alertedFor: undefined } : a))
+      return [...earlier, run].slice(-200)
     })
     await update($, now, () => at)
     const f = await read($, flow)

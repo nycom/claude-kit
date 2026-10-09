@@ -16,10 +16,10 @@ Cost is a rough estimate from token counts and a built-in per-model price table 
 
 A worker can ask for help through `step`:
 
-- `failed: true` counts one failed attempt (test gate red, fix rejected, build broken). Three or more flag the card **FAILED ×N**.
+- `failed: true` counts one failed attempt (test gate red, fix rejected, build broken). Three or more flag the card **FAILED ×N** until a step call reports the task done.
 - `blocked: "<question>"` flags the card **NEEDS INPUT** and shows the question under it; the worker's next `step` call without `blocked` clears it.
 
-A flagged card gets a static red label in the full and compact panel, the band above the prompt shows a red **⚠ N need input** chip (even with no flow running), and a toast fires once each time an agent enters attention. Any subagent spawn opens the panel (once per flow).
+A flagged card gets a static red label in the full and compact panel, the band above the prompt shows a red **⚠ N need attention** chip (even with no flow running), and a toast fires once each time an agent enters attention. Any subagent spawn opens the panel (once per flow).
 
 ## Settings
 
