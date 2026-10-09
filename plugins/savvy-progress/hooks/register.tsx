@@ -518,8 +518,8 @@ const totals = (list: AgentRun[], at: number) => {
 const PANE_CSS = `<style>
 .t{fill:#1f1f1f}.s{fill:#6b6b68}.m{fill:#73736f}.k{fill:#ecebe8}.ln{stroke:#e4e4e1}.tile{fill:#f4f3f0}.r{fill:${RED}}.rt{fill:#ffffff}${tierCss(0)}
 @media (prefers-color-scheme: dark){.t{fill:#ececec}.s{fill:#a8a8a4}.m{fill:#9d9d98}.k{fill:#2c2c2b}.ln{stroke:#333331}.tile{fill:#262625}.r{fill:#ff8a80}.rt{fill:#1f1e1d}${tierCss(1)}}
-.live{animation:p 1.6s ease-in-out infinite}@keyframes p{50%{opacity:.3}}
-@media (prefers-reduced-motion: reduce){.live{animation:none}}
+.spin{animation:spin 1.8s linear infinite}@keyframes spin{to{transform:rotate(1turn)}}
+@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}
 </style>`
 
 // Pixel Clawd from DockCrab (Clawdy): a 24×18 crab on a 30×28 grid, one costume per tier.
@@ -700,8 +700,13 @@ const crabTop = (costume: string, scale: number): number => {
   return H / 2 - (scale * (top + bottom)) / 2
 }
 
-const statusMark = (x: number, y: number, status: string, color: string): string => {
-  if (status === 'running') return `<circle class="live" cx="${x}" cy="${y}" r="3.5" fill="${color}"/>`
+// A running mark is a 33⅓ platter: a faint ring, a marker and its trail turning once per 1.8s,
+// a fixed spindle. The i-th card starts at a golden-ratio phase, so cards never turn in step.
+const platter = (x: number, y: number, r: number, color: string, i: number): string =>
+  `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g class="spin" style="transform-origin:${x}px ${y}px;animation-delay:-${(((i * 0.618) % 1) * 1.8).toFixed(2)}s"><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
+
+const statusMark = (x: number, y: number, status: string, color: string, i = 0): string => {
+  if (status === 'running') return platter(x, y, 3.5, color, i)
   if (status === 'done') return `<path d="M${x - 5} ${y}l3.5 3.5 6.5-7" fill="none" stroke="#3B9C5F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
   if (status === 'failed') return `<path d="M${x - 4} ${y - 4}l8 8M${x + 4} ${y - 4}l-8 8" stroke="#D0453F" stroke-width="1.8" stroke-linecap="round"/>`
   return `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="#9a9a96" stroke-width="1.4"/><path d="M${x} ${y - 2.5}v2.8l1.8 1.2" fill="none" stroke="#9a9a96" stroke-width="1.4" stroke-linecap="round"/>`
@@ -755,7 +760,7 @@ const agentHeight = (a: AgentRun): number => (a.blocked ? 82 : 66)
 
 const ctxOf = (a: AgentRun): number => (a.contextMax ? Math.min(100, Math.round((a.contextTokens / a.contextMax) * 100)) : 0)
 
-const agentSvg = (W: number, a: AgentRun, at: number): string => {
+const agentSvg = (W: number, a: AgentRun, at: number, i = 0): string => {
   const s = tr()
   const tier = tierOf(a.type)
   const color = colorOf(tier)
@@ -784,7 +789,7 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
 ${steps && stepsW > 30 ? `<text class="t" x="42" y="49" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(fitText(steps, 11, stepsW))}</text>` : ''}
 <text class="s" x="${42 + barW}" y="49" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${stats}</text>
 <rect class="k" x="42" y="55" width="${barW}" height="4" rx="2"/><rect${progress === null ? ' class="m"' : ''} x="42" y="55" width="${fillW}" height="4" rx="2"${progress === null ? '' : ` fill="${color}"`}/>
-${statusMark(W - 8, 16, a.status, color)}
+${statusMark(W - 8, 16, a.status, color, i)}
 ${a.blocked ? `<text class="r" x="42" y="75" font-family="${FONT}" font-size="11">${xml(fitText(`↳ ${a.blocked}`, 11, textW))}</text>` : ''}
 <line class="ln" x1="0" y1="${h - 0.5}" x2="${W}" y2="${h - 0.5}"/>`,
   )
@@ -834,7 +839,7 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
     .map(
       (ic, i) =>
         crab(i * 36, 0, ic.k, ic.dim, ic.s === 'running', CRAB_SCALE, ic.c) +
-        (ic.s === 'running' ? `<circle class="live" cx="${i * 36 + 32}" cy="4" r="3" fill="${ic.c}"/>` : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
+        (ic.s === 'running' ? platter(i * 36 + 32, 4, 3, ic.c, i) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
     )
     .join('')
   const x = shown.length * 36 + (more ? 4 : 0)
@@ -977,7 +982,10 @@ const ctxBar = (pct: number, width: number): string => {
   return '█'.repeat(filled) + '░'.repeat(Math.max(0, width - filled))
 }
 
-const STATUS_GLYPH: Record<string, string> = { running: '●', done: '✓', failed: '✗', planned: '◷' }
+const STATUS_GLYPH: Record<string, string> = { done: '✓', failed: '✗', planned: '◷' }
+// A running mark turns clockwise a quadrant a second, on the clock's tick; the i-th row runs i quadrants ahead.
+const glyphOf = (status: string, at: number, i = 0): string =>
+  status === 'running' ? '◴◷◶◵'.charAt((Math.floor(at / 1000) + i) % 4) : STATUS_GLYPH[status]
 
 // Opens the agents pane, or closes it when it is up; true when it ends up open.
 async function togglePane($: EngineInterface): Promise<boolean> {
@@ -1392,8 +1400,8 @@ export const register: Register = (on, options) => {
           {toggleCompact}
           {isEmpty && <Text dimColor>{s.empty}</Text>}
           {running.length > 0 && section('h-run', `${s.running} · ${running.length}`)}
-          {running.map(a => (
-            <Svg key={a.id} source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
+          {running.map((a, i) => (
+            <Svg key={a.id} source={agentSvg(W, a, at, i)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
           ))}
           {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
           {planned.map(pl => (
@@ -1420,7 +1428,7 @@ export const register: Register = (on, options) => {
         {` ${flagOf(a)} `}
       </Text>
     )
-    const row = (a: AgentRun) => {
+    const row = (a: AgentRun, i: number) => {
       const tier = tierOf(a.type)
       const color = colorOf(tier)
       const ctx = ctxOf(a)
@@ -1435,7 +1443,7 @@ export const register: Register = (on, options) => {
               {a.description || a.type}
             </Text>
             {needsAttention(a) ? flagText(a) : null}
-            <Text color={a.status === 'failed' ? 'red' : a.status === 'done' ? 'green' : color}>{STATUS_GLYPH[a.status]}</Text>
+            <Text color={a.status === 'failed' ? 'red' : a.status === 'done' ? 'green' : color}>{glyphOf(a.status, at, i)}</Text>
           </Box>
           {a.blocked ? <Text wrap="truncate-end">{`  ↳ ${a.blocked}`}</Text> : null}
           <Text dimColor wrap="truncate-end">
@@ -1468,7 +1476,7 @@ export const register: Register = (on, options) => {
               {` ${s.isFailed} `}
             </Text>
           ) : null}
-          <Text color={x.status === 'failed' ? 'red' : x.status === 'done' ? 'green' : accentOf()}>{STATUS_GLYPH[bgMark(x)]}</Text>
+          <Text color={x.status === 'failed' ? 'red' : x.status === 'done' ? 'green' : accentOf()}>{glyphOf(bgMark(x), at)}</Text>
           {isActive(x) ? stopButton(x) : null}
         </Box>
         <Text dimColor wrap="truncate-end">
@@ -1492,9 +1500,9 @@ export const register: Register = (on, options) => {
         {p.isCompact ? (
           <Box flexDirection="column">
             <Text wrap="truncate-end">
-              {[...running, ...finished].map(a => (
+              {[...running, ...finished].map((a, i) => (
                 <Text key={a.id} color={colorOf(tierOf(a.type))}>
-                  {STATUS_GLYPH[a.status]}{' '}
+                  {glyphOf(a.status, at, i)}{' '}
                 </Text>
               ))}
               {planned.map(pl => (
