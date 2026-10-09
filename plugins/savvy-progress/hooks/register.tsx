@@ -276,8 +276,10 @@ const noise = (x: number, y: number): number => {
 
 // The whole row is one SVG: the desktop wraps sibling elements onto new lines,
 // so title, bar, percent and the crab live in one drawing; only the count and
-// the dismiss are Buttons beside it.
-const H = 22
+// the dismiss are Buttons beside it. The host gives a Button a margin-block of
+// (band line − control)/2 and lays it from the row's top, so its centre is band line / 2:
+// the images are the band line's height (23, as skins' band) and draw on H / 2.
+const H = 23
 const BAR_H = 16
 const CRAB_W = 26
 const CELL = 3
@@ -369,7 +371,7 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
 <text x="${pillX + bandPillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${f.isFinished ? '#0f2a1c' : '#1f1e1d'}">${xml(text)}</text>
 </g>
 <text class="m" x="${W - CRAB_W - 6}" y="${H / 2 + 4.5}" text-anchor="end" font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${percent}</text>
-${CRAB_CSS}${crab(W - CRAB_W + 1, 0, 'other', false, isWorking, 0.8)}
+${CRAB_CSS}${crab(W - CRAB_W + 1, crabTop('other', 0.8), 'other', false, isWorking, 0.8)}
 </svg>`
 }
 
@@ -673,6 +675,14 @@ const crab = (x: number, y: number, costume: string, dim = false, isWalking = fa
   const props = [...groups.keys()].filter(k => k !== 'bd' && k !== 'la' && k !== 'lb')
   const body = `<g class="bd">${(groups.get('bd') ?? []).join('')}${props.map(group).join('')}</g>`
   return `<g transform="translate(${x},${y}) scale(${scale})" opacity="${dim ? 0.45 : 1}" shape-rendering="crispEdges"><g class="c-${costume}${isWalking ? ' run' : ''}">${body}${group('la')}${group('lb')}</g></g>`
+}
+
+// The y that centres a costume's drawn rows, at `scale`, on the row's centre line.
+const crabTop = (costume: string, scale: number): number => {
+  let top = Infinity
+  let bottom = -Infinity
+  ;(COSTUMES[costume] ?? ((g: Fill) => crabBody(g)))((_x, y, _w, h) => ((top = Math.min(top, y)), (bottom = Math.max(bottom, y + h))), '')
+  return H / 2 - (scale * (top + bottom)) / 2
 }
 
 const statusMark = (x: number, y: number, status: string, color: string): string => {
@@ -1535,7 +1545,7 @@ export const register: Register = (on, options) => {
     const chip = !flagged
       ? null
       : e.surface !== 'terminal' && 'Svg' in ui
-        ? <ui.Svg key="savvy-chip" source={svg(pillW(chipText), 19, pill(0, 2, chipText))} alt={chipText} width={pillW(chipText)} height={19} />
+        ? <ui.Svg key="savvy-chip" source={svg(pillW(chipText), H, pill(0, (H - 15) / 2, chipText))} alt={chipText} width={pillW(chipText)} height={H} />
         : (
             <Text key="savvy-chip" backgroundColor={pal?.red ?? RED} color={pal?.background ?? '#ffffff'} bold>
               {` ${chipText} `}
