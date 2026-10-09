@@ -12,6 +12,15 @@ A Claude Code mod: a progress bar above the prompt and a live panel of subagents
 
 Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`), not a bill.
 
+## Attention flags
+
+A worker can ask for help through `step`:
+
+- `failed: true` counts one failed attempt (test gate red, fix rejected, build broken). Three or more flag the card **FAILED ×N**.
+- `blocked: "<question>"` flags the card **NEEDS INPUT** and shows the question under it; the worker's next `step` call without `blocked` clears it.
+
+A flagged card gets a static red label in the full and compact panel, the band above the prompt shows a red **⚠ N need input** chip (even with no flow running), and a toast fires once each time an agent enters attention. Any subagent spawn opens the panel (once per flow).
+
 ## Settings
 
 `language`: `auto` (default), `en` or `ru`. `auto` follows Claude Code's `language` setting, then the system locale, and falls back to English. Set it in `/config`, or, for a mod loaded by hand, in `~/.claude/settings.json`:

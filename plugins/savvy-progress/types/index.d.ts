@@ -38,6 +38,12 @@ export type AgentRun = {
   stepDone?: number
   stepTotal?: number
   stepNote?: string
+  /** `step` calls with `failed: true`; three or more flag the card. */
+  failedAttempts?: number
+  /** The question the worker is waiting on; its next `step` call without it clears it. */
+  blocked?: string
+  /** The attention reason last toasted, so the same one is not toasted twice. */
+  alertedFor?: string
 }
 
 export type Panel = {
