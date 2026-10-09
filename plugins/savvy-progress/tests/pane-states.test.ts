@@ -137,11 +137,11 @@ test('desktop: a running agent draws a turning platter in its tier colour, each 
   const compact = (await ui.findAll({ type: 'Svg' })) as unknown as Node[]
   await ui.unmount()
   expect(compact[0]?.props?.source?.match(/<g class="spin"/g)?.length).toBe(2)
-  // 25% larger than 3.5 and 3; the compact row sits one lower so the marker (r/3 at y - r) stays inside the 32px-high image.
-  expect(cards.join('')).toMatch(/<circle cx="[\d.]+" cy="16" r="4\.375" fill="none"/)
-  const ring = compact[0]?.props?.source?.match(/<circle cx="[\d.]+" cy="(\d+)" r="3\.75" fill="none"/)
+  // 5% larger than 4.375 and 3.75; the compact row sits low enough that the marker (r/3 at y - r) stays inside the 32px-high image.
+  expect(cards.join('')).toMatch(/<circle cx="[\d.]+" cy="16" r="4\.59" fill="none"/)
+  const ring = compact[0]?.props?.source?.match(/<circle cx="[\d.]+" cy="([\d.]+)" r="3\.94" fill="none"/)
   expect(ring).not.toBeNull()
-  expect(Number(ring?.[1]) - 3.75 - 3.75 / 3).toBeGreaterThanOrEqual(0)
+  expect(Number(ring?.[1]) - 3.94 - 3.94 / 3).toBeGreaterThanOrEqual(0)
 })
 
 test("terminal: a running agent's mark turns one quadrant a second with the clock", async ($, on) => {

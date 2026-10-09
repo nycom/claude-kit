@@ -53,3 +53,53 @@ test('desktop band: dot, bar, pill, crab and the attention chip share one centre
   // The chip's red pill, 15 tall, centred in its own image.
   expect(num(/<rect class="r" x="[\d.]+" y="([\d.]+)"/, chip.props.source) + 7.5).toBe(mid)
 })
+
+// A background row: the drawing and the Stop Button share a row Box. With alignItems center
+// the host centres each child's margin box on the row; the Button's margin-block is symmetric,
+// so its visual centre is the row's centre: the taller of the image and the band line, halved.
+test('desktop background rows: the platter and every other mark sit on the Stop button centre line', async ($, on) => {
+  mock.clock(on, { now: Date.UTC(2026, 9, 9, 12, 2, 0) })
+  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  let n = 0
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: `b${++n}` } }))
+  on('tool.call', { tool: 'CronCreate' }, () => ({ result: { id: 'c1', humanSchedule: 'every 5 minutes', recurring: true } }))
+  for (let i = 0; i < 3; i++) await $.tool.call({ tool: 'Bash', command: `job ${i}`, run_in_background: true } as never)
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  const notify = (id: string, status: string) =>
+    $.prompt.submit({ text: `<task-notification>\n<task-id>${id}</task-id>\n<status>${status}</status>\n<summary>done</summary>\n</task-notification>`, origin: { kind: 'task-notification' }, wait: false } as never)
+  await notify('b2', 'completed')
+  await notify('b3', 'failed')
+
+  type Node = { type: string; props: { flexDirection?: string; alignItems?: string; alt?: string; source?: string; height?: number; label?: string }; children?: Node[] }
+  const ui = await $.ui.mount({ plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', surface: 'desktop', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+  const rows = ((await ui.findAll({ type: 'Box' })) as unknown as Node[]).filter(b => b.children?.[0]?.props.alt?.length && b.props.flexDirection === 'row')
+  await ui.unmount()
+  expect(rows.length).toBe(4)
+
+  const BAND_LINE = 23
+  const marks: Record<string, number> = {}
+  for (const row of rows) {
+    const [img, button] = row.children as Node[]
+    const src = img.props.source ?? ''
+    const ring = /<circle cx="[\d.]+" cy="([\d.]+)" r="[\d.]+" fill="none" stroke="[^"]+" opacity=".3"/.exec(src)
+    const done = /<path d="M[\d.]+ ([\d.]+)l3.5 3.5 6.5-7"/.exec(src)
+    const failed = /<path d="M[\d.]+ ([\d.]+)l8 8M[\d.]+ [\d.]+l-8 8"/.exec(src)
+    const planned = /<circle cx="[\d.]+" cy="([\d.]+)" r="5" fill="none" stroke="#9a9a96"/.exec(src)
+    // The check spans y ± 3.5, the cross y - 4 … y + 4: each mark's visual centre.
+    const [kind, y] = ring ? ['running', Number(ring[1])] : done ? ['done', Number(done[1])] : failed ? ['failed', Number(failed[1]) + 4] : planned ? ['planned', Number(planned[1])] : ['none', NaN]
+    marks[kind] = y
+    if (button) {
+      expect(button.props.label).toBe('■')
+      expect(row.props.alignItems).toBe('center')
+      const buttonCentre = Math.max(img.props.height ?? 0, BAND_LINE) / 2
+      expect(Math.abs(y - buttonCentre)).toBeLessThan(0.5)
+    } else {
+      // An Ended row has no Stop button; its mark keeps the active rows' line.
+      expect(Math.abs(y - (img.props.height ?? 0) / 2)).toBeLessThan(0.5)
+    }
+  }
+  expect(Object.keys(marks).sort()).toEqual(['done', 'failed', 'planned', 'running'])
+})

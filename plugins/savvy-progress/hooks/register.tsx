@@ -717,7 +717,7 @@ const platter = (x: number, y: number, r: number, color: string, i: number): str
   `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g class="spin" style="transform-origin:${x}px ${y}px;animation-delay:-${((drawnAt / 1000 + ((i * 0.618) % 1) * 1.8) % 1.8).toFixed(3)}s"><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
 
 const statusMark = (x: number, y: number, status: string, color: string, i = 0): string => {
-  if (status === 'running') return platter(x, y, 4.375, color, i)
+  if (status === 'running') return platter(x, y, 4.59, color, i)
   if (status === 'done') return `<path d="M${x - 5} ${y}l3.5 3.5 6.5-7" fill="none" stroke="#3B9C5F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
   if (status === 'failed') return `<path d="M${x - 4} ${y - 4}l8 8M${x + 4} ${y - 4}l-8 8" stroke="#D0453F" stroke-width="1.8" stroke-linecap="round"/>`
   return `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="#9a9a96" stroke-width="1.4"/><path d="M${x} ${y - 2.5}v2.8l1.8 1.2" fill="none" stroke="#9a9a96" stroke-width="1.4" stroke-linecap="round"/>`
@@ -850,7 +850,7 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
     .map(
       (ic, i) =>
         crab(i * 36, 0, ic.k, ic.dim, ic.s === 'running', CRAB_SCALE, ic.c) +
-        (ic.s === 'running' ? platter(i * 36 + 32, 5, 3.75, ic.c, i) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
+        (ic.s === 'running' ? platter(i * 36 + 32, 5.5, 3.94, ic.c, i) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
     )
     .join('')
   const x = shown.length * 36 + (more ? 4 : 0)
@@ -884,6 +884,8 @@ const bgMeta = (t: BackgroundTask, at: number): string => {
 
 const bgMark = (t: BackgroundTask): string => (t.status === 'scheduled' ? 'planned' : t.status)
 
+// The row Box centres the image and the Stop button's margin box on one line, and the
+// button's margin-block is symmetric, so its centre is BG_H / 2: every mark draws there.
 const BG_H = 40
 
 const bgSvg = (W: number, t: BackgroundTask, at: number): string => {
@@ -895,7 +897,7 @@ const bgSvg = (W: number, t: BackgroundTask, at: number): string => {
     `<text class="s" x="14" y="25" text-anchor="middle" font-family="${FONT}" font-size="16">${BG_ICON[t.kind]}</text>
 <text class="t" x="42" y="16" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${failed ? pill(Math.round(42 + textWidth(title, 13) + 8), 4, failed) : ''}
 <text class="s" x="42" y="32" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(bgMeta(t, at))}</text>
-${statusMark(W - 8, 16, bgMark(t), accentOf())}
+${statusMark(W - 8, BG_H / 2, bgMark(t), accentOf())}
 <line class="ln" x1="0" y1="${BG_H - 0.5}" x2="${W}" y2="${BG_H - 0.5}"/>`,
   )
 }
