@@ -322,7 +322,25 @@ const fitText = (s: string, size: number, maxW: number): string => {
   return out + '…'
 }
 
-const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
+// Each redraw whose source changes is a new image that starts its animations over, so a
+// looping animation's delay sets it where the draw time `drawnAt` (ms) has it: the loop carries
+// on. `offset` (s) is its phase at time 0.
+const loop = (drawnAt: number, period: number, offset = 0): string => `-${((drawnAt / 1000 + offset) % period).toFixed(3)}s`
+
+// A redraw that would change only the phases keeps the last source, so the image and its
+// loops run on untouched. Keyed per image; the oldest keys go past 256.
+const drawn = new Map<string, { at: number; source: string }>()
+const steady = (key: string, drawnAt: number, draw: (drawnAt: number) => string): string => {
+  const last = drawn.get(key)
+  if (last && draw(last.at) === last.source) return last.source
+  const source = draw(drawnAt)
+  drawn.delete(key)
+  drawn.set(key, { at: drawnAt, source })
+  if (drawn.size > 256) drawn.delete(drawn.keys().next().value ?? '')
+  return source
+}
+
+const rowSvg = (f: Flow, W: number, isWorking: boolean, drawnAt = 0): string => {
   // The title takes what it needs, up to 40% of the row; the bar takes the rest.
   const title = fitText(f.title, 13, Math.max(60, W * 0.4))
   const BAR_X = Math.round(16 + textWidth(title, 13) + 12)
@@ -360,6 +378,7 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
   const bandPillW = Math.round(18 + text.length * 6.6)
   const pillX = Math.max(0, Math.min(BAR_W - bandPillW, fillW - bandPillW))
   const percent = `${Math.round(ratio(f) * 100)}%`
+  const twinkle = f.isFinished ? [3.2, 3.8, 4.4, 3.5] : [2.2, 2.8, 1.9, 3.3]
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <style>
@@ -367,8 +386,7 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
 @media (prefers-color-scheme: dark){.t{fill:#ececec}.m{fill:#9a9a9a}.k{fill:#2c2c2c}.tk{fill:#5a5a5a}}
 </style>${themeCss()}<style>
 /* Pixels twinkle in four out-of-phase groups; a finished bar settles to a slow glow. */
-.t0,.t1,.t2,.t3{animation:tw ${f.isFinished ? 3.2 : 2.2}s ease-in-out infinite}
-.t1{animation-duration:${f.isFinished ? 3.8 : 2.8}s;animation-delay:-.7s}.t2{animation-duration:${f.isFinished ? 4.4 : 1.9}s;animation-delay:-1.3s}.t3{animation-duration:${f.isFinished ? 3.5 : 3.3}s;animation-delay:-.4s}
+${[0, 0.7, 1.3, 0.4].map((offset, k) => `.t${k}{animation:tw ${twinkle[k]}s ease-in-out infinite ${loop(drawnAt, twinkle[k] ?? 1, offset)}}`).join('')}
 @keyframes tw{0%,100%{opacity:1}50%{opacity:${f.isFinished ? 0.8 : 0.3}}}
 @media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3{animation:none}}
 </style>
@@ -386,7 +404,7 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
 <text x="${pillX + bandPillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${f.isFinished ? '#0f2a1c' : '#1f1e1d'}">${xml(text)}</text>
 </g>
 <text class="m" x="${W - CRAB_W - 6}" y="${H / 2 + 4.5}" text-anchor="end" font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${percent}</text>
-${CRAB_CSS}${crab(W - CRAB_W + 1, crabTop('other', 0.8), 'other', false, isWorking, 0.8)}
+${crabCss(drawnAt)}${crab(W - CRAB_W + 1, crabTop('other', 0.8), 'other', false, isWorking, 0.8)}
 </svg>`
 }
 
@@ -555,39 +573,42 @@ const crabBody = (f: Fill, armFront = 0, armCls?: string): void => {
   f(21, 22, 2, 4, CLAY, 'lb')
 }
 
-// Pure CSS, run by the compositor: no redraws. Periods divide one second, so the
-// once-a-second redraw of a running row restarts them in phase. Every crab walks;
+// Pure CSS, run by the compositor. Every period divides one second, so each delay is the
+// draw time's phase in one second plus the loop's own offset. Every crab walks;
 // each costume adds its prop's own motion on top.
-const CRAB_CSS = `<style>
-.run .la{animation:st .5s steps(1) infinite}.run .lb{animation:st .5s steps(1) infinite -.25s}
-.run .bd{animation:bob .5s steps(1) infinite -.125s}
+const crabCss = (drawnAt: number): string => {
+  const d = (offset: number) => loop(drawnAt, 1, offset)
+  return `<style>
+.run .la{animation:st .5s steps(1) infinite ${d(0)}}.run .lb{animation:st .5s steps(1) infinite ${d(0.25)}}
+.run .bd{animation:bob .5s steps(1) infinite ${d(0.125)}}
 .run g{transform-box:fill-box}
 @keyframes st{50%{transform:translateY(-1px)}}@keyframes bob{50%{transform:translateY(1px)}}
-.c-fable.run{animation:float 1s ease-in-out infinite}
+.c-fable.run{animation:float 1s ease-in-out infinite ${d(0)}}
 .c-fable.run .la,.c-fable.run .lb,.c-fable.run .bd{animation:none}
-.c-fable.run .ant{animation:blink 1s steps(1) infinite}
-.c-fable.run .star{animation:blink .5s steps(1) infinite -.25s}
+.c-fable.run .ant{animation:blink 1s steps(1) infinite ${d(0)}}
+.c-fable.run .star{animation:blink .5s steps(1) infinite ${d(0.25)}}
 @keyframes float{50%{transform:translateY(-2px)}}@keyframes blink{50%{opacity:.15}}
-.c-heavy.run .it{animation:scan 1s steps(1) infinite}
-.c-heavy.run .gl{animation:blink 1s steps(1) infinite -.5s}
+.c-heavy.run .it{animation:scan 1s steps(1) infinite ${d(0)}}
+.c-heavy.run .gl{animation:blink 1s steps(1) infinite ${d(0.5)}}
 @keyframes scan{25%{transform:translate(-1px,1px)}50%{transform:translate(-2px,2px)}75%{transform:translate(-1px,1px)}}
-.c-careful.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite}
+.c-careful.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite ${d(0)}}
 @keyframes twist{50%{transform:rotate(-35deg)}}
-.c-medium.run .pan{transform-origin:0 50%;animation:tilt 1s ease-in-out infinite}
-.c-medium.run .egg{animation:flip 1s ease-in-out infinite}
+.c-medium.run .pan{transform-origin:0 50%;animation:tilt 1s ease-in-out infinite ${d(0)}}
+.c-medium.run .egg{animation:flip 1s ease-in-out infinite ${d(0)}}
 @keyframes tilt{20%,40%{transform:rotate(-12deg)}}@keyframes flip{30%{transform:translateY(-5px) scaleY(-1)}60%{transform:translateY(0)}}
-.c-light.run .la{animation-duration:.25s}.c-light.run .lb{animation-duration:.25s;animation-delay:-.125s}
-.c-light.run .flag{transform-origin:0 50%;animation:wave .25s steps(1) infinite}
+.c-light.run .la{animation-duration:.25s}.c-light.run .lb{animation-duration:.25s;animation-delay:${d(0.125)}}
+.c-light.run .flag{transform-origin:0 50%;animation:wave .25s steps(1) infinite ${d(0)}}
 @keyframes wave{50%{transform:skewY(-12deg) scaleX(.85)}}
-.c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite}
+.c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite ${d(0)}}
 @keyframes fence{50%{transform:rotate(25deg)}}
-.c-implement.run .c1{animation:blink .5s steps(1) infinite}.c-implement.run .c2{animation:blink .5s steps(1) infinite -.25s}
-.c-review.run .chk{animation:blink 1s steps(1) infinite}.c-review.run .chk2{animation:blink 1s steps(1) infinite -.5s}
-.c-design.run .it{transform-origin:0 100%;animation:paint .5s ease-in-out infinite}
+.c-implement.run .c1{animation:blink .5s steps(1) infinite ${d(0)}}.c-implement.run .c2{animation:blink .5s steps(1) infinite ${d(0.25)}}
+.c-review.run .chk{animation:blink 1s steps(1) infinite ${d(0)}}.c-review.run .chk2{animation:blink 1s steps(1) infinite ${d(0.5)}}
+.c-design.run .it{transform-origin:0 100%;animation:paint .5s ease-in-out infinite ${d(0)}}
 @keyframes paint{50%{transform:rotate(-20deg)}}
-.c-test.run .bub{animation:blink .5s steps(1) infinite}.c-test.run .bub2{animation:blink .5s steps(1) infinite -.25s}
+.c-test.run .bub{animation:blink .5s steps(1) infinite ${d(0)}}.c-test.run .bub2{animation:blink .5s steps(1) infinite ${d(0.25)}}
 @media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}
 </style>`
+}
 
 const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
   // Fable: astronaut in a glass dome; floats instead of walking, the antenna and the star blink.
@@ -709,22 +730,21 @@ const crabTop = (costume: string, scale: number): number => {
 }
 
 // A running mark is a 33⅓ platter: a faint ring, a marker and its trail turning once per 1.8s,
-// a fixed spindle. Each redraw is a new image that starts its animations over, so the delay
-// sets the turn where the pane's clock (copied here by its render) has it, and the turn
-// carries on; the i-th card adds a golden-ratio phase, so cards never turn in step.
-let drawnAt = 0
-const platter = (x: number, y: number, r: number, color: string, i: number): string =>
-  `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g class="spin" style="transform-origin:${x}px ${y}px;animation-delay:-${((drawnAt / 1000 + ((i * 0.618) % 1) * 1.8) % 1.8).toFixed(3)}s"><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
+// a fixed spindle. The turn carries on across redraws; the i-th card adds a golden-ratio
+// phase, so cards never turn in step.
+const platter = (x: number, y: number, r: number, color: string, i: number, drawnAt: number): string =>
+  `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g class="spin" style="transform-origin:${x}px ${y}px;animation-delay:${loop(drawnAt, 1.8, ((i * 0.618) % 1) * 1.8)}"><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
 
-const statusMark = (x: number, y: number, status: string, color: string, i = 0): string => {
-  if (status === 'running') return platter(x, y, 4.59, color, i)
+const statusMark = (x: number, y: number, status: string, color: string, i = 0, drawnAt = 0): string => {
+  if (status === 'running') return platter(x, y, 4.59, color, i, drawnAt)
   if (status === 'done') return `<path d="M${x - 5} ${y}l3.5 3.5 6.5-7" fill="none" stroke="#3B9C5F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
   if (status === 'failed') return `<path d="M${x - 4} ${y - 4}l8 8M${x + 4} ${y - 4}l-8 8" stroke="#D0453F" stroke-width="1.8" stroke-linecap="round"/>`
   return `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="#9a9a96" stroke-width="1.4"/><path d="M${x} ${y - 2.5}v2.8l1.8 1.2" fill="none" stroke="#9a9a96" stroke-width="1.4" stroke-linecap="round"/>`
 }
 
-const svg = (W: number, H: number, body: string): string =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${PANE_CSS}${themeCss()}${CRAB_CSS}${body}</svg>`
+// A still drawing keeps drawnAt 0: its source does not change with the time.
+const svg = (W: number, H: number, body: string, drawnAt = 0): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${PANE_CSS}${themeCss()}${crabCss(drawnAt)}${body}</svg>`
 
 // The pane's own title already says "Agents": the header names the flow, if any.
 const headerSvg = (W: number, title: string, t: ReturnType<typeof totals>): string => {
@@ -771,7 +791,7 @@ const agentHeight = (a: AgentRun): number => (a.blocked ? 82 : 66)
 
 const ctxOf = (a: AgentRun): number => (a.contextMax ? Math.min(100, Math.round((a.contextTokens / a.contextMax) * 100)) : 0)
 
-const agentSvg = (W: number, a: AgentRun, at: number, i = 0): string => {
+const agentSvg = (W: number, a: AgentRun, at: number, i = 0, drawnAt = 0): string => {
   const s = tr()
   const tier = tierOf(a.type)
   const color = colorOf(tier)
@@ -800,9 +820,10 @@ const agentSvg = (W: number, a: AgentRun, at: number, i = 0): string => {
 ${steps && stepsW > 30 ? `<text class="t" x="42" y="49" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(fitText(steps, 11, stepsW))}</text>` : ''}
 <text class="s" x="${42 + barW}" y="49" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${stats}</text>
 <rect class="k" x="42" y="55" width="${barW}" height="4" rx="2"/><rect${progress === null ? ' class="m"' : ''} x="42" y="55" width="${fillW}" height="4" rx="2"${progress === null ? '' : ` fill="${color}"`}/>
-${statusMark(W - 8, 16, a.status, color, i)}
+${statusMark(W - 8, 16, a.status, color, i, drawnAt)}
 ${a.blocked ? `<text class="r" x="42" y="75" font-family="${FONT}" font-size="11">${xml(fitText(`↳ ${a.blocked}`, 11, textW))}</text>` : ''}
 <line class="ln" x1="0" y1="${h - 0.5}" x2="${W}" y2="${h - 0.5}"/>`,
+    drawnAt,
   )
 }
 
@@ -837,7 +858,7 @@ ${statusMark(W - 8, 16, 'planned', color)}
   )
 }
 
-const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnType<typeof totals>): string => {
+const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnType<typeof totals>, drawnAt = 0): string => {
   const icons = [
     ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false })),
     ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false })),
@@ -850,7 +871,7 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
     .map(
       (ic, i) =>
         crab(i * 36, 0, ic.k, ic.dim, ic.s === 'running', CRAB_SCALE, ic.c) +
-        (ic.s === 'running' ? platter(i * 36 + 32, 5.5, 3.94, ic.c, i) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
+        (ic.s === 'running' ? platter(i * 36 + 32, 5.5, 3.94, ic.c, i, drawnAt) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
     )
     .join('')
   const x = shown.length * 36 + (more ? 4 : 0)
@@ -859,6 +880,7 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
     32,
     `${body}${more ? `<text class="s" x="${x}" y="21" font-family="${FONT}" font-size="12">+${more}</text>` : ''}
 <text class="s" x="${W}" y="21" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">≈${fmtCost(t.cost)} · ${fmtTokens(t.tokens)} · ${fmtTime(t.time)}</text>`,
+    drawnAt,
   )
 }
 
@@ -888,7 +910,7 @@ const bgMark = (t: BackgroundTask): string => (t.status === 'scheduled' ? 'plann
 // button's margin-block is symmetric, so its centre is BG_H / 2: every mark draws there.
 const BG_H = 40
 
-const bgSvg = (W: number, t: BackgroundTask, at: number): string => {
+const bgSvg = (W: number, t: BackgroundTask, at: number, drawnAt = 0): string => {
   const failed = t.status === 'failed' ? tr().isFailed : ''
   const title = fitText(bgTitle(t), 13, W - 42 - 22 - (failed ? pillW(failed) + 8 : 0))
   return svg(
@@ -897,8 +919,9 @@ const bgSvg = (W: number, t: BackgroundTask, at: number): string => {
     `<text class="s" x="14" y="25" text-anchor="middle" font-family="${FONT}" font-size="16">${BG_ICON[t.kind]}</text>
 <text class="t" x="42" y="16" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${failed ? pill(Math.round(42 + textWidth(title, 13) + 8), 4, failed) : ''}
 <text class="s" x="42" y="32" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(bgMeta(t, at))}</text>
-${statusMark(W - 8, BG_H / 2, bgMark(t), accentOf())}
+${statusMark(W - 8, BG_H / 2, bgMark(t), accentOf(), 0, drawnAt)}
 <line class="ln" x1="0" y1="${BG_H - 0.5}" x2="${W}" y2="${BG_H - 0.5}"/>`,
+    drawnAt,
   )
 }
 
@@ -1348,7 +1371,8 @@ export const register: Register = (on, options) => {
     const p: Panel = await read($, panel)
     const bg = await read($, background)
     const at = Math.max(await read($, now), ...list.map(a => a.startedAt), ...bg.map(t => t.startedAt), 0)
-    drawnAt = at
+    // The loops' phase comes from this draw's own time: a redraw between ticks is not on the tick.
+    const drawnAt = await $.clock.now()
 
     const running = list.filter(a => a.status === 'running').reverse()
     const finished = list.filter(a => a.status !== 'running').reverse()
@@ -1392,7 +1416,7 @@ export const register: Register = (on, options) => {
       // The Stop button sits beside the drawing: the desktop would wrap anything inside it.
       const bgCard = (x: BackgroundTask) => (
         <Box key={`bg-${x.id}`} flexDirection="row" alignItems="center" gap={1}>
-          <Svg source={bgSvg(W - 56, x, at)} alt={`${bgTitle(x)}: ${bgMeta(x, at)}${x.status === 'failed' ? `, ${s.isFailed}` : ''}`} width={W - 56} height={BG_H} />
+          <Svg source={steady(`bg-${x.id}`, drawnAt, d => bgSvg(W - 56, x, at, d))} alt={`${bgTitle(x)}: ${bgMeta(x, at)}${x.status === 'failed' ? `, ${s.isFailed}` : ''}`} width={W - 56} height={BG_H} />
           {isActive(x) ? stopButton(x) : null}
         </Box>
       )
@@ -1400,7 +1424,7 @@ export const register: Register = (on, options) => {
       if (p.isCompact) {
         return (
           <Box flexDirection="column" gap={1}>
-            <Svg source={compactSvg(W, list, planned, t)} alt={`${list.length} ${s.agentsCount}, ${summary}`} width={W} height={32} />
+            <Svg source={steady('compact', drawnAt, d => compactSvg(W, list, planned, t, d))} alt={`${list.length} ${s.agentsCount}, ${summary}`} width={W} height={32} />
             {flagged.map(a => (
               <Svg key={`flag-${a.id}`} source={flagSvg(W, a)} alt={agentAlt(a)} width={W} height={20} />
             ))}
@@ -1415,7 +1439,7 @@ export const register: Register = (on, options) => {
           {isEmpty && <Text dimColor>{s.empty}</Text>}
           {running.length > 0 && section('h-run', `${s.running} · ${running.length}`)}
           {running.map((a, i) => (
-            <Svg key={a.id} source={agentSvg(W, a, at, i)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
+            <Svg key={a.id} source={steady(a.id, drawnAt, d => agentSvg(W, a, at, i, d))} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
           ))}
           {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
           {planned.map(pl => (
@@ -1573,6 +1597,7 @@ export const register: Register = (on, options) => {
     if ((f === null && !flagged) || e.props.hasSurvey) return next(e)
     // The band sits above what the mods beneath draw (skins' rings, cache-tax), never in its place.
     const theirs = await next(e)
+    const drawnAt = await $.clock.now()
 
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
@@ -1622,7 +1647,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" alignItems="center" gap={1}>
-            <Svg source={rowSvg(f, width, isWorking)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width} height={H} />
+            <Svg source={steady('band', drawnAt, d => rowSvg(f, width, isWorking, d))} alt={`${f.title}: ${label(f)}, ${percent}`} width={width} height={H} />
             {chip}
             {crewButton}
             {dismiss}

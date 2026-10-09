@@ -217,3 +217,54 @@ test('a respawn with the identical description is still round 2', async ($, on) 
   const labels = (await leaves($, 'terminal')).map(labelOf)
   expect(labels.some(l => l.includes('Running · 2'))).toBe(true)
 })
+
+// A redraw between the clock's ticks (a step report, a token count) phases every loop from the
+// draw's own time: the platter, the crab's walk, the band's twinkle and crab all carry on.
+const STEP = 'mcp__savvy-progress__step'
+const lastDelay = (src: string, rule: string): number => Number(new RegExp(`${rule}\\{[^}]*-([\\d.]+)s\\}`).exec(src)?.[1] ?? NaN)
+const moved = (before: number, after: number, period: number): number => Math.round(((((after - before) % period) + period) % period) * 1000)
+
+test('desktop: a card redrawn 0.37 s after the last draw, between ticks, carries its platter and its crab on by 0.37 s', async ($, on) => {
+  const clock = setup(on)
+  await spawn($, 'phase the walk', 'savvy-careful')
+  const card = async () => (await leaves($, 'desktop')).filter(n => n.type === 'Svg').map(n => n.props?.source ?? '').find(s => s.includes('class="spin"')) ?? ''
+  const phases = (src: string) => ({
+    spin: Number(/class="spin" style="[^"]*animation-delay:-([\d.]+)s/.exec(src)?.[1] ?? NaN),
+    lb: lastDelay(src, '\\.run \\.lb'),
+    bd: lastDelay(src, '\\.run \\.bd'),
+  })
+  const first = await card()
+  const before = phases(first)
+  await clock.advance(370)
+  // Nothing changed: the same source, so the same image keeps turning.
+  expect(await card()).toBe(first)
+  await $.tool.call({ tool: STEP, done: 1, total: 3, agentId: 'w1' } as never)
+  const src = await card()
+  const after = phases(src)
+  expect([moved(before.spin, after.spin, 1.8), moved(before.lb, after.lb, 0.5), moved(before.bd, after.bd, 0.5)]).toEqual([370, 370, 370])
+  expect(src).toContain('@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}')
+  expect(src).toContain('@media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}')
+})
+
+test('desktop band: a row redrawn 0.37 s later carries its twinkle and its crab on by 0.37 s; reduced motion still holds them', async ($, on) => {
+  const clock = setup(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Phase the band', phase: 'delegate', done: 0, total: 4 } as never)
+  await spawn($, 'walk in phase')
+  const row = async () => {
+    const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+    const svgs = (await ui.findAll({ type: 'Svg' })) as unknown as Node[]
+    await ui.unmount()
+    return svgs.find(s => s.props?.alt?.startsWith('Phase the band'))?.props?.source ?? ''
+  }
+  const phases = (src: string) => ({ t1: lastDelay(src, '\\.t1'), t2: lastDelay(src, '\\.t2'), lb: lastDelay(src, '\\.run \\.lb') })
+  const first = await row()
+  const before = phases(first)
+  await clock.advance(370)
+  expect(await row()).toBe(first)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', done: 1 } as never)
+  const src = await row()
+  const after = phases(src)
+  expect([moved(before.t1, after.t1, 2.8), moved(before.t2, after.t2, 1.9), moved(before.lb, after.lb, 0.5)]).toEqual([370, 370, 370])
+  expect(src).toContain('@media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3{animation:none}}')
+  expect(src).toContain('@media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}')
+})
