@@ -524,6 +524,30 @@ const titleOf = (titles: string[], description: string): string | undefined => {
   return titles.map(norm).filter(t => d === t || d.startsWith(`${t} `)).sort((a, b) => b.length - a.length)[0]
 }
 
+// The delegate workflow's labels move the bar on their own: "<task> implement|review c1|fix c1|validate c1|merge",
+// "<repo> docs". Only labels that name a planned task move it; a coordinator call still overwrites.
+const STAGE: Record<string, Phase> = { implement: 'delegate', review: 'review', fix: 'review', validate: 'review', recheck: 'review', merge: 'close', docs: 'close' }
+const stageOf = (titles: string[], description: string): { task: string; word: string } | undefined => {
+  const task = titleOf(titles, description)
+  return task === undefined ? undefined : { task, word: norm(description).slice(task.length).trim().split(' ')[0] ?? '' }
+}
+const isDocs = (a: AgentRun): boolean => norm(a.description).split(' ').pop() === 'docs'
+
+// `run` is the agent that just spawned or ended. Phase only moves forward, done never drops.
+const autoFlow = (f: Flow | null, list: AgentRun[], run: AgentRun | undefined): Flow | null => {
+  if (!f || f.isFinished || !f.tasks?.length || !run) return f
+  const titles = f.tasks.map(t => t.title)
+  if (run.status === 'running') {
+    const phase = STAGE[stageOf(titles, run.description)?.word ?? '']
+    return phase && PHASES.indexOf(phase) > PHASES.indexOf(f.phase) ? { ...f, phase } : f
+  }
+  const merged = new Set(list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s?.word === 'merge').map(s => s?.task))
+  const done = Math.max(f.done, Math.min(f.total, merged.size))
+  const isFinished =
+    done > 0 && done === f.total && isDocs(run) && !list.some(a => a.status === 'running' && (isDocs(a) || titleOf(titles, a.description) !== undefined))
+  return done === f.done && !isFinished ? f : { ...f, done, ...(isFinished ? { isFinished, phase: 'close' as const } : {}) }
+}
+
 const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
   if (!f || f.isFinished) return []
   const tasks = f.tasks ?? []
@@ -1258,7 +1282,7 @@ export const register: Register = (on, options) => {
     if (started.deny !== undefined) return started
 
     const at = await $.clock.now()
-    await update($, agents, list => {
+    const spawned = await update($, agents, list => {
       const round = 1 + list.filter(a => norm(a.description) === norm(e.description) && e.description).length
       const run: AgentRun = {
         id: started.agentId ?? e.tool_use_id,
@@ -1277,6 +1301,7 @@ export const register: Register = (on, options) => {
       }
       return [...list.filter(a => a.id !== run.id), run].slice(-200)
     })
+    await update($, flow, f => autoFlow(f, spawned, spawned.find(a => a.id === (started.agentId ?? e.tool_use_id))))
     await update($, now, () => at)
     await retick($)
     const f = await read($, flow)
@@ -1356,6 +1381,7 @@ export const register: Register = (on, options) => {
       )
       // The last running agent ended: fold the finished group once; a manual expand stays until the next run ends.
       if (wasRunning && !after.some(a => a.status === 'running')) await update($, panel, prev => ({ ...prev, isDoneCollapsed: true }))
+      if (wasRunning) await update($, flow, f => autoFlow(f, after, after.find(a => a.agentId === agentId)))
       await update($, now, () => at)
     }
     return next(e)
