@@ -21,7 +21,8 @@ const ACCENT = '#8f8cf4'
 const DONE = '#5fbf8f'
 const THEME_FILE = '.local/state/omarchy/current/theme/colors.toml'
 const THEME_POLL_MS = 2000
-const THEME_KEYS = ['foreground', 'accent', 'muted', 'red', 'selection', 'background'] as const
+// No theme file yet: look again once a minute, so one created later is still picked up.
+const THEME_IDLE_MS = 60_000
 
 type ProgressInput = {
   title?: string
@@ -36,13 +37,16 @@ type ProgressInput = {
 // the drawings read it, so a missing file (null) keeps every default colour.
 let pal: Palette | null = null
 let themePoll: { cancel(): void } | null = null
+let themeEvery = 0
+let themePath = ''
 const accentOf = (): string => pal?.accent ?? ACCENT
 
-// Appended after the default styles (same specificity, later wins) in light and dark alike.
+// Appended after the default styles (same specificity, later wins), in dark only: the
+// palette is a dark one and cards draw on the host's page, so a light host keeps the defaults.
 // Tile labels turn to the text colour: muted on the selection tile is too faint to read.
 const themeCss = (): string =>
   pal
-    ? `<style>${[
+    ? `<style>@media (prefers-color-scheme: dark){${[
         pal.foreground && `.t{fill:${pal.foreground}}`,
         pal.muted && `.s,.m,.tk{fill:${pal.muted}}`,
         pal.foreground && `.tl{fill:${pal.foreground};fill-opacity:.7}`,
@@ -50,42 +54,52 @@ const themeCss = (): string =>
         pal.red && `.r{fill:${pal.red}}`,
         // Tiles take the theme's page colour: a quiet card, as the defaults draw it.
         pal.background && `.rt,.tile{fill:${pal.background}}`,
-      ].join('')}</style>`
+      ].join('')}}</style>`
     : ''
 
-// The same reading as filetree's and cache-tax's copies: named keys first, then the
-// terminal colorN slots, and the dark background over the plain one.
-const THEME_FALLBACK: Record<(typeof THEME_KEYS)[number], string[]> = {
-  foreground: ['foreground', 'color7'],
-  accent: ['accent', 'color4'],
-  muted: ['muted', 'color8'],
-  red: ['red', 'color1'],
+// Omarchy's keys, first found wins: dim text is `dark_foreground` (`muted` is a border
+// tone, too faint for text), tiles the dark background over the plain one.
+const THEME_FALLBACK: Record<keyof Palette, string[]> = {
+  foreground: ['foreground'],
+  accent: ['accent'],
+  muted: ['dark_foreground', 'muted'],
+  red: ['red'],
   selection: ['selection'],
   background: ['dark_background', 'background'],
 }
 let themeMtime = 0
 
+// Re-arms the poll only when its cadence changes.
+const pollTheme = ($: EngineInterface, ms: number): void => {
+  if (ms === themeEvery) return
+  themeEvery = ms
+  themePoll?.cancel()
+  themePoll = $.clock.every(ms, () => void loadTheme($))
+}
+
 async function loadTheme($: EngineInterface): Promise<void> {
-  const path = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`
   let next: Palette | null = null
   try {
     // A stat per poll; the file is read only when it changed.
-    const stat = await $.fs.stat(path)
+    const stat = await $.fs.stat(themePath)
     if (stat.kind !== 'file') throw new Error('no theme file')
+    pollTheme($, THEME_POLL_MS)
     if (stat.mtimeMs === themeMtime) return
     themeMtime = stat.mtimeMs
-    const toml = String(await $.fs.read(path))
+    const toml = String(await $.fs.read(themePath))
     const get = (k: string) => toml.match(new RegExp(`^${k}\\s*=\\s*"(#[0-9a-fA-F]{6})"`, 'm'))?.[1]
     const found = Object.fromEntries(
-      THEME_KEYS.flatMap(k => {
-        const hex = THEME_FALLBACK[k].map(get).find(Boolean)
+      Object.entries(THEME_FALLBACK).flatMap(([k, keys]) => {
+        const hex = keys.map(get).find(Boolean)
         return hex ? [[k, hex]] : []
       }),
     )
-    if (Object.keys(found).length) next = found
+    // A light theme keeps the defaults: the palette is drawn for dark hosts only.
+    if (Object.keys(found).length && !/^mode\s*=\s*"light"/m.test(toml)) next = found
   } catch {
     // No theme file: the defaults stay.
     themeMtime = 0
+    pollTheme($, THEME_IDLE_MS)
   }
   // An atom update redraws every reader, so only write a palette that changed.
   if (JSON.stringify(next) !== JSON.stringify(await read($, theme))) await update($, theme, () => next)
@@ -614,11 +628,13 @@ const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
 
 // Role costumes, from the type's name first (impeccable-finish-reviewer), then the task's words.
 // First match wins, in this order: "fix tests" is a tester, "review the design" a reviewer.
+// Whole words with a common ending; a hyphen ends a match too, so `claude-code-guide` is no coder.
+const roleWords = (stems: string): RegExp => new RegExp(`\\b(?:${stems})(?:s|es|e?d|ing|e?rs?)?(?![\\w-])`, 'i')
 const ROLES: [costume: string, words: RegExp][] = [
-  ['review', /\b(review|reviewer|audit|grill|verif|critique|inspect)/i],
-  ['test', /\b(test|tests|tester|qa|e2e|repro)/i],
-  ['design', /\b(design|designer|ui|ux|mockup|impeccable|visual|styl)/i],
-  ['implement', /\b(implement|implementer|build|fix|add|refactor|code|coder|develop|migrate|wire)/i],
+  ['review', roleWords('review|audit|grill|verif(?:y|i|ication)|critique|inspect')],
+  ['test', roleWords('test|qa|e2e|repro|reproduc(?:e|ing)')],
+  ['design', roleWords('design|ui|ux|mockup|impeccable|visual|styl(?:e|ing)')],
+  ['implement', roleWords('implement|build|fix|add|refactor|code|develop|migrate|wire')],
 ]
 const roleOf = (text: string): string | undefined => ROLES.find(([, words]) => words.test(text))?.[0]
 
@@ -681,8 +697,12 @@ const progressOf = (a: AgentRun): number | null => {
   return null
 }
 
-// A worker waiting on a question, or one whose attempts keep failing.
-const needsAttention = (a: AgentRun): boolean => !!a.blocked || (a.failedAttempts ?? 0) >= 3
+// A running worker waiting on a question, or one whose attempts keep failing; an ended one is history.
+const needsAttention = (a: AgentRun): boolean => a.status === 'running' && (!!a.blocked || (a.failedAttempts ?? 0) >= 3)
+
+// An ended run's failed streak, kept in its meta once the flag is gone.
+const failedHistory = (a: AgentRun): string =>
+  a.status !== 'running' && (a.failedAttempts ?? 0) >= 3 ? `${tr().failedFlag.toLowerCase()} ×${a.failedAttempts}` : ''
 
 const flagOf = (a: AgentRun): string => (a.blocked ? tr().needsInput : `${tr().failedFlag} ×${a.failedAttempts ?? 0}`)
 
@@ -704,6 +724,7 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
   const meta = [a.effort ? `${modelName(a.model)} · ${a.effort}` : modelName(a.model)]
   if (a.round > 1) meta.push(`${s.round} ${a.round}`)
   if (a.status === 'failed') meta.push(s.failed)
+  if (failedHistory(a)) meta.push(failedHistory(a))
   const barW = textW
   const progress = progressOf(a)
   const stats = `ctx ${ctx}% · ${fmtTokens(a.contextTokens)}  ≈${fmtCost(a.costUsd)}  ${fmtTime(elapsed(a, at))}`
@@ -889,9 +910,11 @@ export const register: Register = (on, options) => {
         await update($, now, () => at)
       })()
     })
-    await loadTheme($)
+    themePath = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`
     themePoll?.cancel()
-    themePoll = $.clock.every(THEME_POLL_MS, () => void loadTheme($))
+    themeEvery = 0
+    themeMtime = 0
+    await loadTheme($)
     return started
   })
 
@@ -924,25 +947,26 @@ export const register: Register = (on, options) => {
         if (a.agentId !== agentId) return a
         const total = Math.max(0, Math.round(input.total ?? a.stepTotal ?? 0))
         const done = Math.max(0, Math.round(input.done ?? a.stepDone ?? 0))
+        const stepDone = total ? Math.min(total, done) : done
+        const wasComplete = (a.stepTotal ?? 0) > 0 && (a.stepDone ?? 0) >= (a.stepTotal ?? 0)
+        // A successful step ends the failed streak: one that moves done on, or first reaches the total.
+        const isProgress = input.failed !== true && (stepDone > (a.stepDone ?? 0) || (total > 0 && done >= total && !wasComplete))
         const run: AgentRun = {
           ...a,
           stepTotal: total,
-          stepDone: total ? Math.min(total, done) : done,
+          stepDone,
           stepNote: input.note?.trim() || undefined,
-          // Reaching done >= total (not failing) ends the failed streak; a run already there does not.
-          failedAttempts:
-            input.failed !== true && total > 0 && done >= total && !((a.stepTotal ?? 0) > 0 && (a.stepDone ?? 0) >= (a.stepTotal ?? 0))
-              ? undefined
-              : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
+          failedAttempts: isProgress ? undefined : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
           blocked: (typeof input.blocked === 'string' && input.blocked.trim()) || undefined,
         }
-        // Toast on each transition into attention; the same reason never twice in a row.
-        const reason = run.blocked ? `input:${run.blocked}` : needsAttention(run) ? 'failed' : undefined
-        alert =
-          reason && reason !== a.alertedFor
-            ? `${s.agent} ${run.description}: ${run.blocked ? `${s.toastInput} — ${(run.blocked.length > 120 ? `${run.blocked.slice(0, 119)}…` : run.blocked)}` : s.toastFailed(run.failedAttempts ?? 0)}`
+        // Toast on crossings only: a new question, or the third failed attempt.
+        const failedCrossed = (a.failedAttempts ?? 0) < 3 && (run.failedAttempts ?? 0) >= 3
+        alert = run.blocked && run.blocked !== a.blocked
+          ? `${s.agent} ${run.description}: ${s.toastInput} — ${clip(run.blocked, 120)}`
+          : failedCrossed
+            ? `${s.agent} ${run.description}: ${s.toastFailed(run.failedAttempts ?? 0)}`
             : ''
-        return { ...run, alertedFor: reason }
+        return run
       }),
     )
     if (alert) $.ui.toast(alert)
@@ -987,11 +1011,7 @@ export const register: Register = (on, options) => {
         steps: 0,
         round,
       }
-      // A new round of the same task supersedes the flags of earlier runs that have ended.
-      const earlier = list
-        .filter(a => a.id !== run.id)
-        .map(a => (round > 1 && norm(e.description) && a.status !== 'running' && norm(a.description) === norm(e.description) ? { ...a, blocked: undefined, failedAttempts: undefined, alertedFor: undefined } : a))
-      return [...earlier, run].slice(-200)
+      return [...list.filter(a => a.id !== run.id), run].slice(-200)
     })
     await update($, now, () => at)
     const f = await read($, flow)
@@ -1181,6 +1201,7 @@ export const register: Register = (on, options) => {
             {'  '}
             {tier === 'other' ? a.type : tier} · {model}
             {a.round > 1 ? ` · ${s.round} ${a.round}` : ''}
+            {failedHistory(a) ? ` · ${failedHistory(a)}` : ''}
           </Text>
           <Text wrap="truncate-end">
             {'  '}
@@ -1259,8 +1280,7 @@ export const register: Register = (on, options) => {
     pal = await read($, theme)
     const f = await read($, flow)
     const list = await read($, agents)
-    // Only a running worker can still be waiting or failing; an ended one is history.
-    const flagged = list.filter(a => a.status === 'running' && needsAttention(a)).length
+    const flagged = list.filter(needsAttention).length
     // With no flow the band still shows up for agents that need attention.
     if ((f === null && !flagged) || e.props.hasSurvey) return next(e)
     // The band sits above what the mods beneath draw (skins' rings, cache-tax), never in its place.
@@ -1326,7 +1346,8 @@ export const register: Register = (on, options) => {
 
     const cols = e.props.bodyColumns
     const titleW = Math.max(8, Math.min(30, f.title.length + 2, Math.floor(cols / 3)))
-    const width = Math.max(6, Math.min(40, cols - titleW - 32))
+    // The chip takes its text, its padding and a gap from the bar.
+    const width = Math.max(6, Math.min(40, cols - titleW - 32 - (flagged ? chipText.length + 3 : 0)))
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" gap={2}>

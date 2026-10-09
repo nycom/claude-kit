@@ -17,7 +17,6 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
     $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   const step = (agentId: string, extra: Record<string, unknown> = {}) =>
     $.tool.call({ tool: STEP, done: 1, ...extra, agentId } as never)
-  const end = (agentId: string) => $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: agentId, agentId } as never)
   // What the terminal pane and band show, as one string.
   const shown = async (component: 'Pane' | 'AbovePrompt') => {
     const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component, requestId: component === 'Pane' ? 'savvy-agents' : undefined, props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
@@ -64,39 +63,25 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
   await step('w1', { done: 3, note: 'retrying' })
   expect(await shown('Pane')).toContain('FAILED ×3')
 
-  // A respawn leaves a still-running blocked worker flagged...
-  await spawn('Pick DB')
-  expect(await shown('Pane')).toContain('NEEDS INPUT')
-  // ...and supersedes it once that run has ended.
-  await end('w2')
-  await spawn('pick db')
-  expect(await shown('Pane')).not.toContain('NEEDS INPUT')
-
-  // An unnamed run never clears another unnamed run's flag.
-  await spawn('...')
-  await step('w5', { blocked: 'which env?' })
-  await spawn('!!!')
-  expect(await shown('Pane')).toContain('↳ which env?')
-
   // Reaching done by lowering total, or by setting it for the first time, also ends the streak.
   await spawn('lower total')
   await spawn('first total')
   for (let i = 0; i < 3; i++) {
-    await step('w7', { done: 3, total: 5, failed: true })
-    await step('w8', { done: 5, failed: true })
+    await step('w3', { done: 3, total: 5, failed: true })
+    await step('w4', { done: 5, failed: true })
   }
   expect(await shown('Pane')).toContain('lower total| FAILED ×3')
   expect(await shown('Pane')).toContain('first total| FAILED ×3')
-  await step('w7', { done: 3, total: 3 })
-  await step('w8', { done: 3, total: 3 })
+  await step('w3', { done: 3, total: 3 })
+  await step('w4', { done: 3, total: 3 })
   expect(await shown('Pane')).not.toContain('lower total| FAILED')
   expect(await shown('Pane')).not.toContain('first total| FAILED')
 })
 
-const setup = (on: Parameters<Parameters<typeof test>[1]>[1], below = '') => {
+const setup = (on: Parameters<Parameters<typeof test>[1]>[1], below = '', toasts: string[] = []) => {
   mock.clock(on)
   on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [below] }))
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', (_$, e) => (toasts.push(e.text), { value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
   on('turn.complete', () => ({ text: '' }))
@@ -121,6 +106,50 @@ test('an ended worker is no longer flagged: the band chip and the card clear', a
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: 'w1', agentId: 'w1' } as never)
   expect(await mountText($, 'terminal', 'AbovePrompt')).not.toContain('needs attention')
   expect(await mountText($, 'terminal', 'Pane')).not.toContain('NEEDS INPUT')
+})
+
+const stepW1 = ($: Parameters<Parameters<typeof test>[1]>[0], extra: Record<string, unknown> = {}) =>
+  $.tool.call({ tool: STEP, done: 1, total: 4, ...extra, agentId: 'w1' } as never)
+
+test('toasts fire on crossings only: failed at the third, blocked on a new question', async ($, on) => {
+  const toasts: string[] = []
+  setup(on, '', toasts)
+  await spawnW1($)
+  for (let i = 0; i < 3; i++) await stepW1($, { failed: true })
+  await stepW1($, { blocked: 'Postgres or SQLite?' })
+  await stepW1($)
+  // Leaving the question does not announce the same failed streak again.
+  expect(toasts).toEqual(['agent pick db: failed 3 times', 'agent pick db: needs input — Postgres or SQLite?'])
+  // A long question is cut in the toast.
+  await stepW1($, { blocked: 'x'.repeat(200) })
+  expect(toasts[2]).toBe(`agent pick db: needs input — ${'x'.repeat(119)}…`)
+})
+
+test('a step that moves done on ends the failed streak', async ($, on) => {
+  setup(on)
+  await spawnW1($)
+  for (let i = 0; i < 3; i++) await stepW1($, { failed: true })
+  expect(await mountText($, 'terminal', 'Pane')).toContain('FAILED ×3')
+  await stepW1($, { done: 2 })
+  expect(await mountText($, 'terminal', 'Pane')).not.toContain('FAILED')
+  // A fresh failure counts from one again.
+  await stepW1($, { done: 2, failed: true })
+  expect(await mountText($, 'terminal', 'Pane')).not.toContain('FAILED')
+})
+
+test('an ended worker drops the failed flag but keeps the count in its meta', async ($, on) => {
+  setup(on)
+  await spawnW1($)
+  for (let i = 0; i < 3; i++) await stepW1($, { failed: true })
+  await $.turn.complete({ reason: 'error', answer: '', durationMs: 0, isAborted: false, turnId: 'w1', agentId: 'w1' } as never)
+  const terminal = await mountText($, 'terminal', 'Pane')
+  expect(terminal).not.toContain('FAILED')
+  expect(terminal).toContain('failed ×3')
+  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+  const card = (await ui.findAll({ type: 'Svg' })).map(n => String((n as { props: { source: string; alt: string } }).props.source + n.props.alt)).join('')
+  expect(card).not.toContain('FAILED')
+  expect(card).toContain('error  ·  failed ×3')
+  await ui.unmount()
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {

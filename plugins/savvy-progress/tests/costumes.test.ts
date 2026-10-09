@@ -16,6 +16,15 @@ test('costumes: roles from the type name or the task, the tier costume otherwise
     ['general-purpose', 'implement the cache layer', 'implement'],
     ['savvy-heavy', 'hunt the race condition', 'heavy'],
     ['general-purpose', 'summarise the thread', 'other'],
+    ['general-purpose', 'reviewing the auth patch', 'review'],
+    ['general-purpose', 'testing the parser', 'test'],
+    ['general-purpose', 'designing the empty state', 'design'],
+    ['general-purpose', 'implementing retries', 'implement'],
+    // Whole words only: a hyphenated name or a longer word is not the role.
+    ['claude-code-guide', 'answer a question', 'other'],
+    ['output-style-setup', 'set the tone', 'other'],
+    ['general-purpose', 'address the comments', 'other'],
+    ['general-purpose', 'update the fixture data', 'other'],
   ]
   for (const [type, description] of cases)
     await $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType: type, provider: 'claude', parentModel: 'x', background: false, fork: false } as never)

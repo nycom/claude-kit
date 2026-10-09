@@ -16,12 +16,12 @@ Cost is a rough estimate from token counts and a built-in per-model price table 
 
 A worker can ask for help through `step`:
 
-- `failed: true` counts one failed attempt (test gate red, fix rejected, build broken); each such call adds one. At three the card is flagged **FAILED ×N**, and N keeps counting. The streak resets when a `step` call without `failed` newly reaches `done >= total`, including by lowering `total` or setting it for the first time. A plain call on a task already at `done >= total` does not reset it.
+- `failed: true` counts one failed attempt (test gate red, fix rejected, build broken); each such call adds one. At three the card is flagged **FAILED ×N**, and N keeps counting. The streak resets when a `step` call without `failed` moves `done` on, or newly reaches `done >= total` (including by lowering `total` or setting it for the first time). A plain call that leaves `done` where it was does not reset it.
 - `blocked: "<question>"` flags the card **NEEDS INPUT** and shows the question under it. The worker's next `step` call without `blocked` clears it.
 
-Respawning the same task (same description, a later round) clears the flags on its earlier runs that have ended; a run still working keeps its flag.
+Only a running worker is flagged. Once it ends the flag goes; a failed streak of three or more stays in the card's meta as **failed ×N**.
 
-A flagged card gets a static red label in the full panel, the compact panel (one extra line per flagged agent) and the terminal rows. The band above the prompt shows a red **⚠ N need(s) attention** chip next to the crew button, even with no flow running. A toast fires once per new reason: a new question, or reaching FAILED ×3. The same question again, or a fourth failure, does not toast; clearing the flag and raising it again does.
+A flagged card gets a static red label in the full panel, the compact panel (one extra line per flagged agent) and the terminal rows. The band above the prompt shows a red **⚠ N need(s) attention** chip next to the crew button, even with no flow running. A toast fires on a crossing only: a new question, or the third failed attempt. The same question again, a fourth failure, or a failed streak showing again after a question clears, does not toast; a question asked again after it cleared does.
 
 ## Panel behaviour
 

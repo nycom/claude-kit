@@ -33,25 +33,31 @@ test('theme: colors.toml recolours the pane; a missing file keeps the defaults',
 
   // No file: the default tile and text colours, nothing themed.
   expect(await drawn()).toContain('.tile{fill:#f4f3f0}')
-  expect(await drawn()).not.toContain('#283457')
+  expect(await drawn()).not.toContain('#13141c')
 
-  put('foreground = "#c0caf5"\naccent = "#7aa2f7"\nmuted = "#565f89"\nred = "#f7768e"\nselection = "#283457"\nbackground = "#1a1b26"\n')
+  // Omarchy's own keys (tokyo-night); with no file the poll runs once a minute, not every 2s.
+  const TOKYO = 'mode = "dark"\naccent = "#7aa2f7"\nselection = "#292e42"\nmuted = "#414868"\nbackground = "#1a1b26"\ndark_background = "#13141c"\nforeground = "#a9b1d6"\ndark_foreground = "#565f89"\nred = "#f7768e"\n'
+  put(TOKYO)
   await clock.advance(2_000)
+  expect(await drawn()).not.toContain('#13141c')
+  await clock.advance(58_000)
   const themed = await drawn()
-  expect(themed).toContain('.t{fill:#c0caf5}')
-  expect(themed).toContain('.k{fill:#283457}')
-  expect(themed).toContain('.rt,.tile{fill:#1a1b26}')
+  // Dark hosts only: the themed rules sit inside the dark media query.
+  expect(themed).toContain('<style>@media (prefers-color-scheme: dark){.t{fill:#a9b1d6}')
+  expect(themed).toContain('.k{fill:#292e42}')
+  expect(themed).toContain('.rt,.tile{fill:#13141c}')
   expect(themed).toContain('.r{fill:#f7768e}')
+  // Dim text is dark_foreground; muted is a border tone.
   expect(themed).toContain('.s,.m,.tk{fill:#565f89}')
+  expect(themed).not.toContain('#414868')
 
-  // A file with only the terminal colorN slots themes the pane too.
-  put('color7 = "#d0d0d0"\ncolor4 = "#4488cc"\ncolor8 = "#777777"\ncolor1 = "#cc3344"\n')
+  // Once found, a switch shows within 2s; a light theme keeps the defaults.
+  put(TOKYO.replace('mode = "dark"', 'mode = "light"'))
   await clock.advance(2_000)
-  const slots = await drawn()
-  expect(slots).toContain('.t{fill:#d0d0d0}')
-  expect(slots).toContain('.s,.m,.tk{fill:#777777}')
-  expect(slots).toContain('.r{fill:#cc3344}')
-  expect(slots).not.toContain('#283457')
+  expect(await drawn()).not.toContain('#13141c')
+  put(TOKYO.replace('#a9b1d6', '#d0d0d0'))
+  await clock.advance(2_000)
+  expect(await drawn()).toContain('.t{fill:#d0d0d0}')
 
   put(null)
   await clock.advance(2_000)
