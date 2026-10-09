@@ -54,8 +54,7 @@ export type BackgroundTask = {
   status: 'running' | 'scheduled' | 'done' | 'failed'
   startedAt: number
   endedAt?: number
-  toolUseId?: string
-  /** A cron's 5-field expression, for its countdown. */
+  /** A cron's schedule: CronCreate's human wording, or the cron expression. */
   schedule?: string
   /** A wakeup's fire time. */
   nextAt?: number

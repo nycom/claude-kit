@@ -40,6 +40,7 @@ let pal: Palette | null = null
 let themePoll: { cancel(): void } | null = null
 let themeEvery = 0
 let clockTick: { cancel(): void } | null = null
+let tickMs = 0
 let themePath = ''
 const accentOf = (): string => pal?.accent ?? ACCENT
 
@@ -822,34 +823,6 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
 
 const isActive = (t: BackgroundTask): boolean => t.status === 'running' || t.status === 'scheduled'
 
-// One cron field: `*`, `a`, `a-b`, each with an optional `/step`, in a comma list.
-const cronField = (field: string, v: number, [lo, hi]: [number, number]): boolean =>
-  field.split(',').some(part => {
-    const [range = '', step = '1'] = part.split('/')
-    const [a = NaN, b] = range === '*' ? [lo, hi] : range.split('-').map(Number)
-    const end = b ?? (part.includes('/') ? hi : a)
-    return v >= a && v <= end && (v - a) % Number(step) === 0
-  })
-
-// The next local minute a 5-field cron fires after `from`, as standard cron reads it
-// (day of month OR day of week when both are set).
-// ponytail: a minute-by-minute scan capped at 8 days (crons expire after 7); names (MON, JAN) give no countdown.
-const cronNext = (expr: string, from: number): number | null => {
-  const [mi = '', ho = '', dom = '', mon = '', dow = '', extra] = expr.trim().split(/\s+/)
-  if (!dow || extra !== undefined) return null
-  const d = new Date(Math.floor(from / 60_000) * 60_000)
-  for (let i = 0; i < 8 * 1440; i++) {
-    d.setTime(d.getTime() + 60_000)
-    // Sunday is 0 or 7.
-    const isDom = cronField(dom, d.getDate(), [1, 31])
-    const isDow = cronField(dow, d.getDay(), [0, 7]) || (d.getDay() === 0 && cronField(dow, 7, [0, 7]))
-    const isDay = dom !== '*' && dow !== '*' ? isDom || isDow : isDom && isDow
-    if (isDay && cronField(mi, d.getMinutes(), [0, 59]) && cronField(ho, d.getHours(), [0, 23]) && cronField(mon, d.getMonth() + 1, [1, 12]))
-      return d.getTime()
-  }
-  return null
-}
-
 const fmtIn = (ms: number): string => {
   const m = Math.max(0, Math.ceil(ms / 60_000))
   return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d`
@@ -863,8 +836,7 @@ const bgTitle = (t: BackgroundTask): string => t.text || tr().kinds[t.kind]
 const bgMeta = (t: BackgroundTask, at: number): string => {
   const s = tr()
   if (t.status !== 'scheduled') return `${s.kinds[t.kind]} · ${fmtTime(elapsed(t, at))}`
-  const next = t.nextAt ?? (t.schedule ? cronNext(t.schedule, at) : null)
-  return `${s.kinds[t.kind]} · ${next === null ? (t.schedule ?? '') : s.nextIn(fmtIn(next - at))}`
+  return `${s.kinds[t.kind]} · ${t.nextAt ? s.nextIn(fmtIn(t.nextAt - at)) : (t.schedule ?? '')}`
 }
 
 const bgMark = (t: BackgroundTask): string => (t.status === 'scheduled' ? 'planned' : t.status)
@@ -885,32 +857,59 @@ ${statusMark(W - 8, 16, bgMark(t), accentOf())}
   )
 }
 
+// The clock ticks every second while an agent or a background task runs, every minute
+// while only scheduled rows wait (their countdowns are in minutes), not at all otherwise.
+// One timer: a change of pace cancels it before arming the next.
+async function retick($: EngineInterface): Promise<void> {
+  const isRunning = (await read($, agents)).some(a => a.status === 'running')
+  const bg = await read($, background)
+  const ms = isRunning || bg.some(t => t.status === 'running') ? 1000 : bg.some(isActive) ? 60_000 : 0
+  if (ms === tickMs) return
+  clockTick?.cancel()
+  tickMs = ms
+  clockTick = ms
+    ? $.clock.every(ms, () => {
+        void (async () => {
+          const at = await $.clock.now()
+          await update($, now, () => at)
+          await retick($)
+        })()
+      })
+    : null
+}
+
 // Writes the list only when it changed: every write redraws the pane.
 async function setBackground($: EngineInterface, change: (list: BackgroundTask[]) => BackgroundTask[]): Promise<void> {
   const prev = await read($, background)
   if (JSON.stringify(change(prev)) !== JSON.stringify(prev)) await update($, background, list => change(list).slice(-100))
+  await retick($)
 }
 
 // Ends the active tasks that match, failed when the word says so (`failed`, an error).
 async function finishTask($: EngineInterface, isIt: (t: BackgroundTask) => boolean, status: string): Promise<void> {
   const at = await $.clock.now()
   const ended = /fail|error/i.test(status) ? ('failed' as const) : ('done' as const)
-  await setBackground($, list => list.map(t => (isActive(t) && isIt(t) ? { ...t, status: ended, endedAt: at } : t)))
+  // A failed notification can arrive after the Stop reconcile already ended the task as done.
+  const isOpen = (t: BackgroundTask) => isActive(t) || (ended === 'failed' && t.status === 'done')
+  await setBackground($, list => list.map(t => (isOpen(t) && isIt(t) ? { ...t, status: ended, endedAt: t.endedAt ?? at } : t)))
 }
 
 // A notification's status that ends its task: present, and not one that says it still runs.
 const isFinal = (status: string | undefined): status is string => !!status && !/^(running|pending|in_progress)$/i.test(status)
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+// A command or description on one line.
+const oneLine = (v: unknown): string => str(v).replace(/\s+/g, ' ').trim()
 
 // What a call started in the background, from its input and its result; null when nothing.
 const startedTask = (e: Record<string, unknown>, r: Record<string, unknown>): Omit<BackgroundTask, 'startedAt'> | null => {
-  const toolUseId = str(e.tool_use_id) || undefined
-  if (e.tool === 'Bash' && str(r.backgroundTaskId)) return { id: str(r.backgroundTaskId), kind: 'shell', text: str(e.command), status: 'running', toolUseId }
-  if (e.tool === 'Monitor' && str(r.taskId)) return { id: str(r.taskId), kind: 'monitor', text: str(e.description) || str(e.command), status: 'running', toolUseId }
-  if (e.tool === 'CronCreate' && str(r.id)) return { id: str(r.id), kind: 'cron', text: str(e.prompt), status: 'scheduled', schedule: str(e.cron) }
-  if (e.tool === 'ScheduleWakeup' && typeof r.scheduledFor === 'number' && !r.stopped)
-    return { id: `wake:${str(e.prompt)}`, kind: 'wakeup', text: str(e.reason) || str(e.prompt), status: 'scheduled', nextAt: r.scheduledFor }
+  if (e.tool === 'Bash' && str(r.backgroundTaskId)) return { id: str(r.backgroundTaskId), kind: 'shell', text: oneLine(e.command), status: 'running' }
+  if (e.tool === 'Monitor' && str(r.taskId)) return { id: str(r.taskId), kind: 'monitor', text: oneLine(e.description) || oneLine(e.command), status: 'running' }
+  if (e.tool === 'CronCreate' && str(r.id))
+    return { id: str(r.id), kind: 'cron', text: oneLine(e.prompt), status: 'scheduled', schedule: str(r.humanSchedule) || str(e.cron) }
+  // scheduledFor 0: the wakeup could not be armed.
+  if (e.tool === 'ScheduleWakeup' && typeof r.scheduledFor === 'number' && r.scheduledFor > 0 && !r.stopped)
+    return { id: `wake:${str(e.prompt)}`, kind: 'wakeup', text: oneLine(e.reason) || oneLine(e.prompt), status: 'scheduled', nextAt: r.scheduledFor }
   return null
 }
 
@@ -1024,16 +1023,7 @@ export const register: Register = (on, options) => {
       description: 'Show or hide the panel of subagents: running, finished and planned, with model, context, cost and time',
     })
 
-    // Ticks the running agents' and background tasks' clocks; quiet when nothing runs or waits.
-    clockTick?.cancel()
-    clockTick = $.clock.every(1000, () => {
-      void (async () => {
-        const list = await read($, agents)
-        if (!list.some(a => a.status === 'running') && !(await read($, background)).some(isActive)) return
-        const at = await $.clock.now()
-        await update($, now, () => at)
-      })()
-    })
+    await retick($)
     themePath = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`
     themePoll?.cancel()
     themeEvery = 0
@@ -1127,18 +1117,25 @@ export const register: Register = (on, options) => {
     return r
   })
 
-  // A background task's notification ends it: `<task-id>`, `<tool-use-id>`, `<status>` in its text.
+  // A background task's notification ends it: `<task-id>` and `<status>` in its text.
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'task-notification') {
       for (const [block] of e.text.matchAll(/<task-notification>[\s\S]*?<\/task-notification>/g)) {
         const tag = (k: string) => new RegExp(`<${k}>([^<]*)</${k}>`).exec(block)?.[1]?.trim()
         const id = tag('task-id')
-        const toolUseId = tag('tool-use-id')
         const status = tag('status')
-        if (isFinal(status)) await finishTask($, t => t.id === id || (!!toolUseId && t.toolUseId === toolUseId), status).catch(() => undefined)
+        if (isFinal(status)) await finishTask($, t => t.id === id, status).catch(() => undefined)
       }
     }
     return next(e)
+  })
+
+  // A new, resumed or cleared session starts with no background rows; the next stop's
+  // reconcile adds back what still runs. A compaction keeps them.
+  on('classic.SessionStart', async ($, e, next) => {
+    const result = await next(e)
+    if (e.source !== 'compact') await setBackground($, () => []).catch(() => undefined)
+    return result
   })
 
   // At each stop the engine lists what is in flight: add what was missed, end what is gone.
@@ -1154,10 +1151,10 @@ export const register: Register = (on, options) => {
         const missed: BackgroundTask[] = [
           ...live
             .filter(t => !known.has(t.id))
-            .map(t => ({ id: t.id, kind: t.type as 'shell' | 'monitor', text: t.command || t.description, status: 'running' as const, startedAt: at })),
+            .map(t => ({ id: t.id, kind: t.type as 'shell' | 'monitor', text: oneLine(t.command) || oneLine(t.description), status: 'running' as const, startedAt: at })),
           ...crons
             .filter(c => !known.has(c.id) && !known.has(`wake:${c.prompt}`))
-            .map(c => ({ id: c.id, kind: 'cron' as const, text: c.prompt, status: 'scheduled' as const, startedAt: at, schedule: c.schedule })),
+            .map(c => ({ id: c.id, kind: 'cron' as const, text: oneLine(c.prompt), status: 'scheduled' as const, startedAt: at, schedule: c.schedule })),
         ]
         return [...list.map(t => (isActive(t) && !ids.has(t.id) ? { ...t, status: 'done' as const, endedAt: at } : t)), ...missed]
       })
@@ -1191,6 +1188,7 @@ export const register: Register = (on, options) => {
       return [...list.filter(a => a.id !== run.id), run].slice(-200)
     })
     await update($, now, () => at)
+    await retick($)
     const f = await read($, flow)
     await autoOpen($, f && !f.isFinished ? f.title : 'savvy-flow')
     return started
@@ -1231,6 +1229,7 @@ export const register: Register = (on, options) => {
             },
       ),
     )
+    await retick($)
     return result
   })
 

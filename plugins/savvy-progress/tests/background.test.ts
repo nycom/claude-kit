@@ -4,7 +4,6 @@ import type { TestBody } from 'claude-code/testing'
 type $T = Parameters<TestBody>[0]
 type OnT = Parameters<TestBody>[1]
 
-// 2026-10-09 12:02 UTC: `*/5` next fires at :05 in any whole-quarter-hour time zone.
 const T0 = Date.UTC(2026, 9, 9, 12, 2, 0)
 const PANE = { plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never } as const
 
@@ -16,6 +15,7 @@ const setup = (on: OnT, toasts: string[] = [], opens: string[] = [], calls: Reco
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('classic.Stop', () => ({}))
+  on('classic.SessionStart', () => ({}))
   on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' } }))
   on('tool.call', { tool: 'Monitor' }, () => ({ result: { taskId: 'm1', timeoutMs: 300000 } }))
   on('tool.call', { tool: 'CronCreate' }, () => ({ result: { id: 'c1', humanSchedule: 'every 5 minutes', recurring: true } }))
@@ -73,7 +73,7 @@ test('a failed background task shows a red "failed" label in Ended, never the at
   await band.unmount()
 })
 
-test('Monitor, CronCreate and ScheduleWakeup rows: monitor elapsed, scheduled countdowns', async ($, on) => {
+test('Monitor, CronCreate and ScheduleWakeup rows: monitor elapsed, cron schedule, wakeup countdown', async ($, on) => {
   setup(on)
   await $.tool.call({ tool: 'Monitor', description: 'watch the deploy log', timeout_ms: 300000, command: 'tail -f deploy.log' } as never)
   await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
@@ -83,7 +83,7 @@ test('Monitor, CronCreate and ScheduleWakeup rows: monitor elapsed, scheduled co
   expect(text).toContain('watch the deploy log')
   expect(text).toContain('monitor')
   expect(text).toContain('check the deploy')
-  expect(text).toContain('next in 3m')
+  expect(text).toContain('every 5 minutes')
   expect(text).toContain('wait for CI')
   expect(text).toContain('next in 12m')
   // Desktop draws the same rows.
@@ -151,6 +151,7 @@ test('the Stop hook reconciles: adds a missed task and cron, finishes a vanished
   expect(text).toContain('Background · 2')
   expect(text).toContain('npm test --watch')
   expect(text).toContain('poll the queue')
+  expect(text).toContain('*/5 * * * *')
   expect(text).not.toContain('an agent')
   expect(text).toContain('Ended · 1')
 })
@@ -164,4 +165,79 @@ test('a background task never opens the pane; a subagent still does', async ($, 
   expect(opens).toEqual([])
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'pick db', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   expect(opens).toEqual(['savvy-agents'])
+})
+
+test('a failed notification after the Stop reconcile ended the task still marks it failed', async ($, on) => {
+  setup(on)
+  await bash($)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [], session_crons: [] })
+  expect(await shown($)).not.toContain('failed')
+  await notify($, 'b1', 'failed')
+  expect(await shown($)).toContain('failed')
+})
+
+test('a ScheduleWakeup that could not arm (scheduledFor 0) adds no row', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
+  on('tool.call', { tool: 'ScheduleWakeup' }, () => ({ result: { scheduledFor: 0, clampedDelaySeconds: 0, wasClamped: false } }))
+  await $.tool.call({ tool: 'ScheduleWakeup', delaySeconds: 720, reason: 'wait for CI', prompt: '/loop check CI' } as never)
+  expect(await shown($)).not.toContain('wait for CI')
+})
+
+test('a multi-line command shows on one line, started or reconciled', async ($, on) => {
+  setup(on)
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev\n  --port 5173', run_in_background: true } as never)
+  await $.classic.Stop({
+    stop_hook_active: false,
+    background_tasks: [
+      { id: 'b1', type: 'shell', status: 'running', description: 'dev', command: 'npm run dev' },
+      { id: 'b9', type: 'shell', status: 'running', description: 'test', command: 'npm test\n\t--watch' },
+    ],
+    session_crons: [],
+  })
+  const text = await shown($)
+  expect(text).toContain('npm run dev --port 5173')
+  expect(text).toContain('npm test --watch')
+})
+
+test('a session start, resume or clear empties the background list', async ($, on) => {
+  setup(on)
+  await bash($)
+  expect(await shown($)).toContain('Background · 1')
+  await $.classic.SessionStart({ source: 'resume' })
+  const text = await shown($)
+  expect(text).not.toContain('Background · ')
+  expect(text).not.toContain('Ended')
+})
+
+test('the clock ticks once a minute while only scheduled rows wait, every second while a task runs', async ($, on) => {
+  // Count clock.now reads: each tick reads it once.
+  let ticks = 0
+  const counting = ((event: string, ...rest: ((...args: never[]) => unknown)[]) => {
+    const handler = rest.pop() as (...args: never[]) => unknown
+    const counted = event === 'clock.now' ? (...args: never[]) => (ticks++, handler(...args)) : handler
+    return (on as (...args: unknown[]) => void)(event, ...rest, counted)
+  }) as typeof on
+  const clock = setup(counting)
+  mock.env(on, { HOME: '/home/k' })
+  on('fs.stat', () => { throw new Error('ENOENT') })
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('tool.register', () => ({ value: undefined }) as never)
+  on('command.register', () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  ticks = 0
+  await clock.advance(120_000)
+  expect(ticks).toBeLessThanOrEqual(2)
+  expect(ticks).toBeGreaterThan(0)
+
+  await bash($)
+  ticks = 0
+  await clock.advance(3_000)
+  expect(ticks).toBe(3)
+
+  await notify($, 'b1', 'completed')
+  ticks = 0
+  await clock.advance(120_000)
+  expect(ticks).toBeLessThanOrEqual(3)
 })
