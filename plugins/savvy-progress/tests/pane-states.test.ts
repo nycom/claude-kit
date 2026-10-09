@@ -149,3 +149,20 @@ test("terminal: a running agent's mark turns one quadrant a second with the cloc
   await clock.advance(1_000)
   expect(await mark()).toBe(SPIN[(SPIN.indexOf(first) + 1) % 4])
 })
+
+// Each redraw is a new image that starts its animations over: the delay carries the turn on from the wall clock.
+test('desktop: a redraw a second later carries each platter on by a second, background rows too; reduced motion still holds it', async ($, on) => {
+  const clock = setup(on)
+  await spawn($, 'fix tests')
+  await bash($, 'npm run dev')
+  const draw = async () => {
+    const src = (await leaves($, 'desktop')).filter(n => n.type === 'Svg').map(n => n.props?.source ?? '').join('')
+    expect(src).toContain('@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}')
+    return [...src.matchAll(/class="spin" style="[^"]*animation-delay:-([\d.]+)s/g)].map(m => Number(m[1]))
+  }
+  const before = await draw()
+  await clock.advance(1_000)
+  const after = await draw()
+  expect(before.length).toBe(2)
+  expect(after.map((d, k) => Math.round((((d - (before[k] ?? 0)) % 1.8) + 1.8) % 1.8 * 1000))).toEqual([1000, 1000])
+})

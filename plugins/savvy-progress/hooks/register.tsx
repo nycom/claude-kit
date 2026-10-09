@@ -701,9 +701,12 @@ const crabTop = (costume: string, scale: number): number => {
 }
 
 // A running mark is a 33⅓ platter: a faint ring, a marker and its trail turning once per 1.8s,
-// a fixed spindle. The i-th card starts at a golden-ratio phase, so cards never turn in step.
+// a fixed spindle. Each redraw is a new image that starts its animations over, so the delay
+// sets the turn where the pane's clock (copied here by its render) has it, and the turn
+// carries on; the i-th card adds a golden-ratio phase, so cards never turn in step.
+let drawnAt = 0
 const platter = (x: number, y: number, r: number, color: string, i: number): string =>
-  `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g class="spin" style="transform-origin:${x}px ${y}px;animation-delay:-${(((i * 0.618) % 1) * 1.8).toFixed(2)}s"><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
+  `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g class="spin" style="transform-origin:${x}px ${y}px;animation-delay:-${((drawnAt / 1000 + ((i * 0.618) % 1) * 1.8) % 1.8).toFixed(3)}s"><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
 
 const statusMark = (x: number, y: number, status: string, color: string, i = 0): string => {
   if (status === 'running') return platter(x, y, 3.5, color, i)
@@ -1335,6 +1338,7 @@ export const register: Register = (on, options) => {
     const p: Panel = await read($, panel)
     const bg = await read($, background)
     const at = Math.max(await read($, now), ...list.map(a => a.startedAt), ...bg.map(t => t.startedAt), 0)
+    drawnAt = at
 
     const running = list.filter(a => a.status === 'running').reverse()
     const finished = list.filter(a => a.status !== 'running').reverse()
