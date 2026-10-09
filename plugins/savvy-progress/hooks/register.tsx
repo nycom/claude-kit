@@ -717,7 +717,7 @@ const platter = (x: number, y: number, r: number, color: string, i: number): str
   `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g class="spin" style="transform-origin:${x}px ${y}px;animation-delay:-${((drawnAt / 1000 + ((i * 0.618) % 1) * 1.8) % 1.8).toFixed(3)}s"><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
 
 const statusMark = (x: number, y: number, status: string, color: string, i = 0): string => {
-  if (status === 'running') return platter(x, y, 3.5, color, i)
+  if (status === 'running') return platter(x, y, 4.375, color, i)
   if (status === 'done') return `<path d="M${x - 5} ${y}l3.5 3.5 6.5-7" fill="none" stroke="#3B9C5F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
   if (status === 'failed') return `<path d="M${x - 4} ${y - 4}l8 8M${x + 4} ${y - 4}l-8 8" stroke="#D0453F" stroke-width="1.8" stroke-linecap="round"/>`
   return `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="#9a9a96" stroke-width="1.4"/><path d="M${x} ${y - 2.5}v2.8l1.8 1.2" fill="none" stroke="#9a9a96" stroke-width="1.4" stroke-linecap="round"/>`
@@ -850,7 +850,7 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
     .map(
       (ic, i) =>
         crab(i * 36, 0, ic.k, ic.dim, ic.s === 'running', CRAB_SCALE, ic.c) +
-        (ic.s === 'running' ? platter(i * 36 + 32, 4, 3, ic.c, i) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
+        (ic.s === 'running' ? platter(i * 36 + 32, 5, 3.75, ic.c, i) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
     )
     .join('')
   const x = shown.length * 36 + (more ? 4 : 0)
