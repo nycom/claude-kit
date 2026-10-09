@@ -32,6 +32,7 @@ test('theme: colors.toml recolours the pane; a missing file keeps the defaults',
     return (await ui.findAll({ type: 'Svg' })).map(s => String((s as { props: { source: string } }).props.source)).join('')
   }
 
+  // No skins plugin loaded here: its theme reads as absent and colors.toml applies, with no error.
   // No file: the default tile and text colours, nothing themed.
   expect(await drawn()).toContain('.tile{fill:#f4f3f0}')
   expect(await drawn()).not.toContain('#13141c')
