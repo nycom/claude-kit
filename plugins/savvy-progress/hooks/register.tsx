@@ -815,9 +815,9 @@ export const register: Register = (on, options) => {
           stepTotal: total,
           stepDone: total ? Math.min(total, done) : done,
           stepNote: input.note?.trim() || undefined,
-          // A finished task (done >= total, not failing) ends the failed streak.
+          // Reaching done >= total (not failing) ends the failed streak; sitting there does not.
           failedAttempts:
-            input.failed !== true && total > 0 && done >= total ? undefined : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
+            input.failed !== true && total > 0 && done >= total && (a.stepDone ?? 0) < total ? undefined : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
           blocked: (typeof input.blocked === 'string' && input.blocked.trim()) || undefined,
         }
         // Toast on each transition into attention; the same reason never twice in a row.
@@ -871,10 +871,10 @@ export const register: Register = (on, options) => {
         steps: 0,
         round,
       }
-      // A new round of the same task supersedes the earlier runs' flags.
+      // A new round of the same task supersedes the flags of earlier runs that have ended.
       const earlier = list
         .filter(a => a.id !== run.id)
-        .map(a => (round > 1 && norm(a.description) === norm(e.description) ? { ...a, blocked: undefined, failedAttempts: undefined, alertedFor: undefined } : a))
+        .map(a => (round > 1 && norm(e.description) && a.status !== 'running' && norm(a.description) === norm(e.description) ? { ...a, blocked: undefined, failedAttempts: undefined, alertedFor: undefined } : a))
       return [...earlier, run].slice(-200)
     })
     await update($, now, () => at)

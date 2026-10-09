@@ -9,11 +9,13 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
   on('ui.open', () => ({ value: { isPlaced: true } }))
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `w${++n}` }))
+  on('turn.complete', () => ({ text: '' }))
 
   const spawn = (description: string) =>
     $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   const step = (agentId: string, extra: Record<string, unknown> = {}) =>
     $.tool.call({ tool: STEP, done: 1, ...extra, agentId } as never)
+  const end = (agentId: string) => $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: agentId, agentId } as never)
   // What the terminal pane and band show, as one string.
   const shown = async (component: 'Pane' | 'AbovePrompt') => {
     const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component, requestId: component === 'Pane' ? 'savvy-agents' : undefined, props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
@@ -52,12 +54,26 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
   // Finishing the task clears the failed streak; a fresh streak toasts again.
   await step('w1', { done: 3, total: 3 })
   expect(await shown('Pane')).not.toContain('FAILED')
-  await step('w1', { failed: true })
-  await step('w1', { failed: true })
-  await step('w1', { failed: true })
+  // A fresh streak toasts again, and sitting at done == total a plain step call does not clear it.
+  await step('w1', { failed: true, done: 3 })
+  await step('w1', { failed: true, done: 3 })
+  await step('w1', { failed: true, done: 3 })
   expect(toasts.length).toBe(4)
+  await step('w1', { done: 3, note: 'retrying' })
+  expect(await shown('Pane')).toContain('FAILED ×3')
 
-  // A new run of the same task supersedes the blocked one.
+  // A respawn leaves a still-running blocked worker flagged...
   await spawn('Pick DB')
+  expect(await shown('Pane')).toContain('NEEDS INPUT')
+  // ...and supersedes it once that run has ended.
+  await end('w2')
+  await spawn('pick db')
   expect(await shown('Pane')).not.toContain('NEEDS INPUT')
+
+  // An unnamed run never clears another unnamed run's flag.
+  await spawn('...')
+  await step('w5', { blocked: 'which env?' })
+  await end('w5')
+  await spawn('!!!')
+  expect(await shown('Pane')).toContain('↳ which env?')
 })
