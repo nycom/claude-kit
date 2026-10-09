@@ -1262,9 +1262,11 @@ export const register: Register = (on, options) => {
     const agentId = e.agentId
     if (agentId) {
       const at = await $.clock.now()
-      await update($, agents, list =>
+      let wasRunning = false
+      const after = await update($, agents, list =>
         list.map(a => {
           if (a.agentId !== agentId) return a
+          wasRunning = a.status === 'running'
           // A run whose steps went unseen still gets the turn's own sum.
           const fallback = a.steps === 0 && e.usage
           return {
@@ -1287,6 +1289,8 @@ export const register: Register = (on, options) => {
           }
         }),
       )
+      // The last running agent ended: fold the finished group once; a manual expand stays until the next run ends.
+      if (wasRunning && !after.some(a => a.status === 'running')) await update($, panel, prev => ({ ...prev, isDoneCollapsed: true }))
       await update($, now, () => at)
     }
     return next(e)
