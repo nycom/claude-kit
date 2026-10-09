@@ -44,6 +44,23 @@ export type AgentRun = {
   blocked?: string
 }
 
+/** Background work that is not a subagent: shells and monitors run, crons and wakeups wait. */
+export type BackgroundTask = {
+  /** The task id (TaskStop's), the cron id (CronDelete's), or `wake:<prompt>` for a ScheduleWakeup. */
+  id: string
+  kind: 'shell' | 'monitor' | 'cron' | 'wakeup'
+  /** The command, or the description, prompt or reason. */
+  text: string
+  status: 'running' | 'scheduled' | 'done' | 'failed'
+  startedAt: number
+  endedAt?: number
+  toolUseId?: string
+  /** A cron's 5-field expression, for its countdown. */
+  schedule?: string
+  /** A wakeup's fire time. */
+  nextAt?: number
+}
+
 export type Panel = {
   isCompact: boolean
   isDoneCollapsed: boolean
@@ -61,6 +78,7 @@ declare module 'claude-code' {
       panel: Panel
       now: number
       theme: Palette | null
+      background: BackgroundTask[]
     }
   }
 }

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentRun, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
+import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
 
 const flow = atom({ plugin: 'savvy-progress', key: 'flow' } as const, null)
 const agents = atom({ plugin: 'savvy-progress', key: 'agents' } as const, [])
@@ -12,6 +12,7 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
 })
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
 const theme = atom({ plugin: 'savvy-progress', key: 'theme' } as const, null)
+const background = atom({ plugin: 'savvy-progress', key: 'background' } as const, [])
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
@@ -147,6 +148,11 @@ const STRINGS = {
     toastInput: 'needs input',
     toastFailed: (n: number) => `failed ${n} times`,
     chip: (n: number) => `⚠ ${n} ${n === 1 ? 'needs' : 'need'} attention`,
+    background: 'Background',
+    stop: 'Stop',
+    nextIn: (t: string) => `next in ${t}`,
+    stopFailed: (what: string, err: string) => `could not stop ${clip(what, 60)}: ${err}`,
+    kinds: { shell: 'shell', monitor: 'monitor', cron: 'scheduled', wakeup: 'loop wakeup' },
   },
   ru: {
     pane: 'Агенты',
@@ -182,6 +188,11 @@ const STRINGS = {
     toastInput: 'нужен ответ',
     toastFailed: (n: number) => `неудач: ${n}`,
     chip: (n: number) => `⚠ ${n} ${n === 1 ? 'требует' : 'требуют'} внимания`,
+    background: 'Фоновые',
+    stop: 'Стоп',
+    nextIn: (t: string) => `через ${t}`,
+    stopFailed: (what: string, err: string) => `не удалось остановить ${clip(what, 60)}: ${err}`,
+    kinds: { shell: 'команда', monitor: 'монитор', cron: 'по расписанию', wakeup: 'пробуждение цикла' },
   },
 } as const
 
@@ -464,7 +475,7 @@ const fmtTime = (ms: number): string => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
 }
 
-const elapsed = (a: AgentRun, at: number): number => (a.endedAt ?? Math.max(at, a.startedAt)) - a.startedAt
+const elapsed = (a: { startedAt: number; endedAt?: number }, at: number): number => (a.endedAt ?? Math.max(at, a.startedAt)) - a.startedAt
 
 type Planned = PlannedTask & { n: number }
 
@@ -807,6 +818,117 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
   )
 }
 
+// --- background work: shells and monitors that run, crons and wakeups that wait.
+
+const isActive = (t: BackgroundTask): boolean => t.status === 'running' || t.status === 'scheduled'
+
+// One cron field: `*`, `a`, `a-b`, each with an optional `/step`, in a comma list.
+const cronField = (field: string, v: number, [lo, hi]: [number, number]): boolean =>
+  field.split(',').some(part => {
+    const [range = '', step = '1'] = part.split('/')
+    const [a = NaN, b] = range === '*' ? [lo, hi] : range.split('-').map(Number)
+    const end = b ?? (part.includes('/') ? hi : a)
+    return v >= a && v <= end && (v - a) % Number(step) === 0
+  })
+
+// The next local minute a 5-field cron fires after `from`, as standard cron reads it
+// (day of month OR day of week when both are set).
+// ponytail: a minute-by-minute scan capped at 8 days (crons expire after 7); names (MON, JAN) give no countdown.
+const cronNext = (expr: string, from: number): number | null => {
+  const [mi = '', ho = '', dom = '', mon = '', dow = '', extra] = expr.trim().split(/\s+/)
+  if (!dow || extra !== undefined) return null
+  const d = new Date(Math.floor(from / 60_000) * 60_000)
+  for (let i = 0; i < 8 * 1440; i++) {
+    d.setTime(d.getTime() + 60_000)
+    // Sunday is 0 or 7.
+    const isDom = cronField(dom, d.getDate(), [1, 31])
+    const isDow = cronField(dow, d.getDay(), [0, 7]) || (d.getDay() === 0 && cronField(dow, 7, [0, 7]))
+    const isDay = dom !== '*' && dow !== '*' ? isDom || isDow : isDom && isDow
+    if (isDay && cronField(mi, d.getMinutes(), [0, 59]) && cronField(ho, d.getHours(), [0, 23]) && cronField(mon, d.getMonth() + 1, [1, 12]))
+      return d.getTime()
+  }
+  return null
+}
+
+const fmtIn = (ms: number): string => {
+  const m = Math.max(0, Math.ceil(ms / 60_000))
+  return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d`
+}
+
+const BG_ICON: Record<BackgroundTask['kind'], string> = { shell: '$', monitor: '◉', cron: '⏲', wakeup: '↻' }
+
+const bgTitle = (t: BackgroundTask): string => t.text || tr().kinds[t.kind]
+
+// What runs shows its time so far, what waits its countdown, what ended its duration.
+const bgMeta = (t: BackgroundTask, at: number): string => {
+  const s = tr()
+  if (t.status !== 'scheduled') return `${s.kinds[t.kind]} · ${fmtTime(elapsed(t, at))}`
+  const next = t.nextAt ?? (t.schedule ? cronNext(t.schedule, at) : null)
+  return `${s.kinds[t.kind]} · ${next === null ? (t.schedule ?? '') : s.nextIn(fmtIn(next - at))}`
+}
+
+const bgMark = (t: BackgroundTask): string => (t.status === 'scheduled' ? 'planned' : t.status)
+
+const BG_H = 40
+
+const bgSvg = (W: number, t: BackgroundTask, at: number): string => {
+  const failed = t.status === 'failed' ? tr().isFailed : ''
+  const title = fitText(bgTitle(t), 13, W - 42 - 22 - (failed ? pillW(failed) + 8 : 0))
+  return svg(
+    W,
+    BG_H,
+    `<text class="s" x="14" y="25" text-anchor="middle" font-family="${FONT}" font-size="16">${BG_ICON[t.kind]}</text>
+<text class="t" x="42" y="16" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${failed ? pill(Math.round(42 + textWidth(title, 13) + 8), 4, failed) : ''}
+<text class="s" x="42" y="32" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(bgMeta(t, at))}</text>
+${statusMark(W - 8, 16, bgMark(t), accentOf())}
+<line class="ln" x1="0" y1="${BG_H - 0.5}" x2="${W}" y2="${BG_H - 0.5}"/>`,
+  )
+}
+
+// Writes the list only when it changed: every write redraws the pane.
+async function setBackground($: EngineInterface, change: (list: BackgroundTask[]) => BackgroundTask[]): Promise<void> {
+  const prev = await read($, background)
+  if (JSON.stringify(change(prev)) !== JSON.stringify(prev)) await update($, background, list => change(list).slice(-100))
+}
+
+// Ends the active tasks that match, failed when the word says so (`failed`, an error).
+async function finishTask($: EngineInterface, isIt: (t: BackgroundTask) => boolean, status: string): Promise<void> {
+  const at = await $.clock.now()
+  const ended = /fail|error/i.test(status) ? ('failed' as const) : ('done' as const)
+  await setBackground($, list => list.map(t => (isActive(t) && isIt(t) ? { ...t, status: ended, endedAt: at } : t)))
+}
+
+// A notification's status that ends its task: present, and not one that says it still runs.
+const isFinal = (status: string | undefined): status is string => !!status && !/^(running|pending|in_progress)$/i.test(status)
+
+const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+
+// What a call started in the background, from its input and its result; null when nothing.
+const startedTask = (e: Record<string, unknown>, r: Record<string, unknown>): Omit<BackgroundTask, 'startedAt'> | null => {
+  const toolUseId = str(e.tool_use_id) || undefined
+  if (e.tool === 'Bash' && str(r.backgroundTaskId)) return { id: str(r.backgroundTaskId), kind: 'shell', text: str(e.command), status: 'running', toolUseId }
+  if (e.tool === 'Monitor' && str(r.taskId)) return { id: str(r.taskId), kind: 'monitor', text: str(e.description) || str(e.command), status: 'running', toolUseId }
+  if (e.tool === 'CronCreate' && str(r.id)) return { id: str(r.id), kind: 'cron', text: str(e.prompt), status: 'scheduled', schedule: str(e.cron) }
+  if (e.tool === 'ScheduleWakeup' && typeof r.scheduledFor === 'number' && !r.stopped)
+    return { id: `wake:${str(e.prompt)}`, kind: 'wakeup', text: str(e.reason) || str(e.prompt), status: 'scheduled', nextAt: r.scheduledFor }
+  return null
+}
+
+// One press stops it, no confirmation: TaskStop for a shell or a monitor, CronDelete for a
+// cron, ScheduleWakeup's `stop` for a dynamic /loop. An error is toasted and the row stays.
+async function stopTask($: EngineInterface, t: BackgroundTask): Promise<void> {
+  const consent = `The user pressed Stop on the background ${t.kind} "${clip(bgTitle(t), 80)}" in the Agents panel.`
+  const call = t.kind === 'cron' ? { tool: 'CronDelete', id: t.id } : t.kind === 'wakeup' ? { tool: 'ScheduleWakeup', stop: true } : { tool: 'TaskStop', task_id: t.id }
+  try {
+    const r = await $.tool.call({ ...call, consent } as never)
+    if (r.deny !== undefined || r.isError) throw new Error(r.deny ?? r.text ?? str(r.result))
+  } catch (err) {
+    $.ui.toast(tr().stopFailed(bgTitle(t), err instanceof Error ? err.message : String(err)))
+    return
+  }
+  await finishTask($, x => x.id === t.id, 'killed')
+}
+
 // --- terminal drawing: the same rows in text.
 
 const ctxBar = (pct: number, width: number): string => {
@@ -902,12 +1024,12 @@ export const register: Register = (on, options) => {
       description: 'Show or hide the panel of subagents: running, finished and planned, with model, context, cost and time',
     })
 
-    // Ticks the running agents' clocks; quiet when nothing runs.
+    // Ticks the running agents' and background tasks' clocks; quiet when nothing runs or waits.
     clockTick?.cancel()
     clockTick = $.clock.every(1000, () => {
       void (async () => {
         const list = await read($, agents)
-        if (!list.some(a => a.status === 'running')) return
+        if (!list.some(a => a.status === 'running') && !(await read($, background)).some(isActive)) return
         const at = await $.clock.now()
         await update($, now, () => at)
       })()
@@ -986,6 +1108,62 @@ export const register: Register = (on, options) => {
     } finally {
       await update($, flow, prev => (prev ? { ...prev, running: Math.max(0, prev.running - 1) } : prev))
     }
+  })
+
+  // Background work, never auto-opening the pane: a shell sent to the background, a monitor,
+  // a cron or a wakeup; a wakeup's `stop` ends the waiting wakeups.
+  on('tool.call', { tool: ['Bash', 'Monitor', 'CronCreate', 'ScheduleWakeup'] }, async ($, e, next) => {
+    const r = await next(e)
+    const result = !r.isError && r.result && typeof r.result === 'object' ? (r.result as Record<string, unknown>) : null
+    const task = result && startedTask(e as unknown as Record<string, unknown>, result)
+    // The tool has run: a failed bookkeeping write must not fail its call.
+    const record = async () => {
+      if (task) {
+        const at = await $.clock.now()
+        await setBackground($, list => [...list.filter(t => t.id !== task.id), { ...task, startedAt: at }])
+      } else if (e.tool === 'ScheduleWakeup' && result?.stopped) await finishTask($, t => t.kind === 'wakeup', 'killed')
+    }
+    await record().catch(() => undefined)
+    return r
+  })
+
+  // A background task's notification ends it: `<task-id>`, `<tool-use-id>`, `<status>` in its text.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'task-notification') {
+      for (const [block] of e.text.matchAll(/<task-notification>[\s\S]*?<\/task-notification>/g)) {
+        const tag = (k: string) => new RegExp(`<${k}>([^<]*)</${k}>`).exec(block)?.[1]?.trim()
+        const id = tag('task-id')
+        const toolUseId = tag('tool-use-id')
+        const status = tag('status')
+        if (isFinal(status)) await finishTask($, t => t.id === id || (!!toolUseId && t.toolUseId === toolUseId), status).catch(() => undefined)
+      }
+    }
+    return next(e)
+  })
+
+  // At each stop the engine lists what is in flight: add what was missed, end what is gone.
+  on('classic.Stop', async ($, e, next) => {
+    const result = await next(e)
+    const crons = e.session_crons
+    if (!e.background_tasks || !crons) return result
+    const live = e.background_tasks.filter(t => t.type === 'shell' || t.type === 'monitor')
+    const ids = new Set([...live.map(t => t.id), ...crons.flatMap(c => [c.id, `wake:${c.prompt}`])])
+    const reconcile = async (at: number) =>
+      setBackground($, list => {
+        const known = new Set(list.map(t => t.id))
+        const missed: BackgroundTask[] = [
+          ...live
+            .filter(t => !known.has(t.id))
+            .map(t => ({ id: t.id, kind: t.type as 'shell' | 'monitor', text: t.command || t.description, status: 'running' as const, startedAt: at })),
+          ...crons
+            .filter(c => !known.has(c.id) && !known.has(`wake:${c.prompt}`))
+            .map(c => ({ id: c.id, kind: 'cron' as const, text: c.prompt, status: 'scheduled' as const, startedAt: at, schedule: c.schedule })),
+        ]
+        return [...list.map(t => (isActive(t) && !ids.has(t.id) ? { ...t, status: 'done' as const, endedAt: at } : t)), ...missed]
+      })
+    // Bookkeeping after the hooks have run: a failure here must not fail the stop.
+    await $.clock.now().then(reconcile).catch(() => undefined)
+    return result
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -1098,11 +1276,14 @@ export const register: Register = (on, options) => {
     const list = await read($, agents)
     const f = await read($, flow)
     const p: Panel = await read($, panel)
-    const at = Math.max(await read($, now), ...list.map(a => a.startedAt), 0)
+    const bg = await read($, background)
+    const at = Math.max(await read($, now), ...list.map(a => a.startedAt), ...bg.map(t => t.startedAt), 0)
 
     const running = list.filter(a => a.status === 'running').reverse()
     const finished = list.filter(a => a.status !== 'running').reverse()
     const planned = plannedOf(f, list)
+    const bgActive = bg.filter(isActive).reverse()
+    const bgEnded = bg.filter(x => !isActive(x)).reverse()
     const t = totals(list, at)
     // The pane's title says "Agents"; inside, only the flow's own name.
     const title = f && !f.isFinished ? f.title : ''
@@ -1118,12 +1299,14 @@ export const register: Register = (on, options) => {
     const toggleDone = (
       <Button
         key="done"
-        label={`${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length}`}
+        label={`${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length + bgEnded.length}`}
         plain
         onPress={() => update($, panel, prev => ({ ...prev, isDoneCollapsed: !prev.isDoneCollapsed }))}
       />
     )
-    const isEmpty = list.length === 0 && planned.length === 0
+    const isEmpty = list.length === 0 && planned.length === 0 && bg.length === 0
+    const hasEnded = finished.length + bgEnded.length > 0
+    const stopButton = (x: BackgroundTask) => <Button key={`stop-${x.id}`} label={s.stop} plain onPress={() => stopTask($, x)} />
     const flagged = list.filter(needsAttention)
     const summary = `≈${fmtCost(t.cost)}, ${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
 
@@ -1134,6 +1317,13 @@ export const register: Register = (on, options) => {
         <Text key={key} dimColor>
           {text}
         </Text>
+      )
+      // The Stop button sits beside the drawing: the desktop would wrap anything inside it.
+      const bgCard = (x: BackgroundTask) => (
+        <Box key={`bg-${x.id}`} flexDirection="row" alignItems="center" gap={1}>
+          <Svg source={bgSvg(W - 56, x, at)} alt={`${bgTitle(x)}: ${bgMeta(x, at)}${x.status === 'failed' ? `, ${s.isFailed}` : ''}`} width={W - 56} height={BG_H} />
+          {isActive(x) ? stopButton(x) : null}
+        </Box>
       )
 
       if (p.isCompact) {
@@ -1156,11 +1346,14 @@ export const register: Register = (on, options) => {
           {running.map(a => (
             <Svg key={a.id} source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
           ))}
-          {finished.length > 0 && toggleDone}
+          {bgActive.length > 0 && section('h-bg', `${s.background} · ${bgActive.length}`)}
+          {bgActive.map(bgCard)}
+          {hasEnded && toggleDone}
           {!p.isDoneCollapsed &&
             finished.map(a => (
               <Svg key={a.id} source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
             ))}
+          {!p.isDoneCollapsed && bgEnded.map(bgCard)}
           {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
           {planned.map(pl => (
             <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
@@ -1214,6 +1407,28 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const bgRow = (x: BackgroundTask) => (
+      <Box key={`bg-${x.id}`} flexDirection="column" marginBottom={1}>
+        <Box flexDirection="row" gap={1}>
+          <Text color={accentOf()}>{BG_ICON[x.kind]}</Text>
+          <Text bold wrap="truncate-end">
+            {bgTitle(x)}
+          </Text>
+          {x.status === 'failed' ? (
+            <Text backgroundColor={pal?.red ?? RED} color={pal?.background ?? '#ffffff'} bold>
+              {` ${s.isFailed} `}
+            </Text>
+          ) : null}
+          <Text color={x.status === 'failed' ? 'red' : x.status === 'done' ? 'green' : accentOf()}>{STATUS_GLYPH[bgMark(x)]}</Text>
+          {isActive(x) ? stopButton(x) : null}
+        </Box>
+        <Text dimColor wrap="truncate-end">
+          {'  '}
+          {bgMeta(x, at)}
+        </Text>
+      </Box>
+    )
+
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between">
@@ -1251,8 +1466,11 @@ export const register: Register = (on, options) => {
             {isEmpty && <Text dimColor>{s.empty}</Text>}
             {running.length > 0 && <Text dimColor>{s.running} · {running.length}</Text>}
             {running.map(row)}
-            {finished.length > 0 && toggleDone}
+            {bgActive.length > 0 && <Text dimColor>{s.background} · {bgActive.length}</Text>}
+            {bgActive.map(bgRow)}
+            {hasEnded && toggleDone}
             {!p.isDoneCollapsed && finished.map(row)}
+            {!p.isDoneCollapsed && bgEnded.map(bgRow)}
             {planned.length > 0 && <Text dimColor>{s.planned} · {planned.length}</Text>}
             {planned.map(pl => {
               const tier = pl.tier in TIER_COLOR ? pl.tier : 'other'
