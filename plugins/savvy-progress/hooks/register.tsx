@@ -815,9 +815,11 @@ export const register: Register = (on, options) => {
           stepTotal: total,
           stepDone: total ? Math.min(total, done) : done,
           stepNote: input.note?.trim() || undefined,
-          // Reaching done >= total (not failing) ends the failed streak; sitting there does not.
+          // Reaching done >= total (not failing) ends the failed streak; a run already there does not.
           failedAttempts:
-            input.failed !== true && total > 0 && done >= total && (a.stepDone ?? 0) < total ? undefined : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
+            input.failed !== true && total > 0 && done >= total && !((a.stepTotal ?? 0) > 0 && (a.stepDone ?? 0) >= (a.stepTotal ?? 0))
+              ? undefined
+              : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
           blocked: (typeof input.blocked === 'string' && input.blocked.trim()) || undefined,
         }
         // Toast on each transition into attention; the same reason never twice in a row.

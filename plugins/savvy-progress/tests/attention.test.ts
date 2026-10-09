@@ -76,4 +76,18 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
   await end('w5')
   await spawn('!!!')
   expect(await shown('Pane')).toContain('↳ which env?')
+
+  // Reaching done by lowering total, or by setting it for the first time, also ends the streak.
+  await spawn('lower total')
+  await spawn('first total')
+  for (let i = 0; i < 3; i++) {
+    await step('w7', { done: 3, total: 5, failed: true })
+    await step('w8', { done: 5, failed: true })
+  }
+  expect(await shown('Pane')).toContain('lower total| FAILED ×3')
+  expect(await shown('Pane')).toContain('first total| FAILED ×3')
+  await step('w7', { done: 3, total: 3 })
+  await step('w8', { done: 3, total: 3 })
+  expect(await shown('Pane')).not.toContain('lower total| FAILED')
+  expect(await shown('Pane')).not.toContain('first total| FAILED')
 })
