@@ -142,6 +142,10 @@ test('an ended worker drops the failed flag but keeps the count in its meta', as
   await spawnW1($)
   for (let i = 0; i < 3; i++) await stepW1($, { failed: true })
   await $.turn.complete({ reason: 'error', answer: '', durationMs: 0, isAborted: false, turnId: 'w1', agentId: 'w1' } as never)
+  // The last run ended, so the finished group folded: open it to read the card.
+  const pane = await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+  await $.ui.press({ plugin: 'savvy-progress', key: 'done' })
+  await pane.unmount()
   const terminal = await mountText($, 'terminal', 'Pane')
   expect(terminal).not.toContain('FAILED')
   expect(terminal).toContain('failed ×3')

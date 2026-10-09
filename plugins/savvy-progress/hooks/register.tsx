@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentRun, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
+import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
 
 const flow = atom({ plugin: 'savvy-progress', key: 'flow' } as const, null)
 const agents = atom({ plugin: 'savvy-progress', key: 'agents' } as const, [])
@@ -12,6 +12,7 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
 })
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
 const theme = atom({ plugin: 'savvy-progress', key: 'theme' } as const, null)
+const background = atom({ plugin: 'savvy-progress', key: 'background' } as const, [])
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
@@ -39,6 +40,7 @@ let pal: Palette | null = null
 let themePoll: { cancel(): void } | null = null
 let themeEvery = 0
 let clockTick: { cancel(): void } | null = null
+let tickMs = 0
 let themePath = ''
 const accentOf = (): string => pal?.accent ?? ACCENT
 
@@ -118,8 +120,6 @@ const STRINGS = {
     cost: 'Cost',
     tokens: 'Tokens',
     time: 'Time',
-    collapse: 'Collapse',
-    expand: 'Expand',
     running: 'Running',
     finished: 'Ended',
     planned: 'Planned',
@@ -147,14 +147,17 @@ const STRINGS = {
     toastInput: 'needs input',
     toastFailed: (n: number) => `failed ${n} times`,
     chip: (n: number) => `⚠ ${n} ${n === 1 ? 'needs' : 'need'} attention`,
+    background: 'Background',
+    nextIn: (t: string) => `next in ${t}`,
+    due: 'due',
+    stopFailed: (what: string, err: string) => `could not stop ${clip(what, 60)}: ${err}`,
+    kinds: { shell: 'shell', monitor: 'monitor', cron: 'scheduled', wakeup: 'loop wakeup' },
   },
   ru: {
     pane: 'Агенты',
     cost: 'Стоимость',
     tokens: 'Токены',
     time: 'Время',
-    collapse: 'Свернуть',
-    expand: 'Развернуть',
     running: 'Работают',
     finished: 'Закончили',
     planned: 'Запланированы',
@@ -182,6 +185,11 @@ const STRINGS = {
     toastInput: 'нужен ответ',
     toastFailed: (n: number) => `неудач: ${n}`,
     chip: (n: number) => `⚠ ${n} ${n === 1 ? 'требует' : 'требуют'} внимания`,
+    background: 'Фоновые',
+    nextIn: (t: string) => `через ${t}`,
+    due: 'пора',
+    stopFailed: (what: string, err: string) => `не удалось остановить ${clip(what, 60)}: ${err}`,
+    kinds: { shell: 'команда', monitor: 'монитор', cron: 'по расписанию', wakeup: 'пробуждение цикла' },
   },
 } as const
 
@@ -262,8 +270,10 @@ const noise = (x: number, y: number): number => {
 
 // The whole row is one SVG: the desktop wraps sibling elements onto new lines,
 // so title, bar, percent and the crab live in one drawing; only the count and
-// the dismiss are Buttons beside it.
-const H = 22
+// the dismiss are Buttons beside it. The host gives a Button a margin-block of
+// (band line − control)/2 and lays it from the row's top, so its centre is band line / 2:
+// the images are the band line's height (23, as skins' band) and draw on H / 2.
+const H = 23
 const BAR_H = 16
 const CRAB_W = 26
 const CELL = 3
@@ -355,7 +365,7 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
 <text x="${pillX + bandPillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${f.isFinished ? '#0f2a1c' : '#1f1e1d'}">${xml(text)}</text>
 </g>
 <text class="m" x="${W - CRAB_W - 6}" y="${H / 2 + 4.5}" text-anchor="end" font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${percent}</text>
-${CRAB_CSS}${crab(W - CRAB_W + 1, 0, 'other', false, isWorking, 0.8)}
+${CRAB_CSS}${crab(W - CRAB_W + 1, crabTop('other', 0.8), 'other', false, isWorking, 0.8)}
 </svg>`
 }
 
@@ -464,7 +474,7 @@ const fmtTime = (ms: number): string => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
 }
 
-const elapsed = (a: AgentRun, at: number): number => (a.endedAt ?? Math.max(at, a.startedAt)) - a.startedAt
+const elapsed = (a: { startedAt: number; endedAt?: number }, at: number): number => (a.endedAt ?? Math.max(at, a.startedAt)) - a.startedAt
 
 type Planned = PlannedTask & { n: number }
 
@@ -661,6 +671,14 @@ const crab = (x: number, y: number, costume: string, dim = false, isWalking = fa
   return `<g transform="translate(${x},${y}) scale(${scale})" opacity="${dim ? 0.45 : 1}" shape-rendering="crispEdges"><g class="c-${costume}${isWalking ? ' run' : ''}">${body}${group('la')}${group('lb')}</g></g>`
 }
 
+// The y that centres a costume's drawn rows, at `scale`, on the row's centre line.
+const crabTop = (costume: string, scale: number): number => {
+  let top = Infinity
+  let bottom = -Infinity
+  ;(COSTUMES[costume] ?? ((g: Fill) => crabBody(g)))((_x, y, _w, h) => ((top = Math.min(top, y)), (bottom = Math.max(bottom, y + h))), '')
+  return H / 2 - (scale * (top + bottom)) / 2
+}
+
 const statusMark = (x: number, y: number, status: string, color: string): string => {
   if (status === 'running') return `<circle class="live" cx="${x}" cy="${y}" r="3.5" fill="${color}"/>`
   if (status === 'done') return `<path d="M${x - 5} ${y}l3.5 3.5 6.5-7" fill="none" stroke="#3B9C5F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
@@ -807,6 +825,127 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
   )
 }
 
+// --- background work: shells and monitors that run, crons and wakeups that wait.
+
+const isActive = (t: BackgroundTask): boolean => t.status === 'running' || t.status === 'scheduled'
+
+const fmtIn = (ms: number): string => {
+  const m = Math.max(0, Math.ceil(ms / 60_000))
+  return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d`
+}
+
+const BG_ICON: Record<BackgroundTask['kind'], string> = { shell: '$', monitor: '◉', cron: '⏲', wakeup: '↻' }
+
+const bgTitle = (t: BackgroundTask): string => t.text || tr().kinds[t.kind]
+
+// What runs shows its time so far in whole minutes, "<1m" in the first (the clock may tick
+// only once a minute, so a seconds reading would freeze), what waits its countdown, what
+// ended its duration.
+const bgMeta = (t: BackgroundTask, at: number): string => {
+  const s = tr()
+  const ms = elapsed(t, at)
+  if (t.status === 'running') return `${s.kinds[t.kind]} · ${ms < 60_000 ? '<1m' : fmtIn(Math.floor(ms / 60_000) * 60_000)}`
+  if (t.status !== 'scheduled') return `${s.kinds[t.kind]} · ${fmtTime(ms)}`
+  return `${s.kinds[t.kind]} · ${t.nextAt ? (t.nextAt > at ? s.nextIn(fmtIn(t.nextAt - at)) : s.due) : (t.schedule ?? '')}`
+}
+
+const bgMark = (t: BackgroundTask): string => (t.status === 'scheduled' ? 'planned' : t.status)
+
+const BG_H = 40
+
+const bgSvg = (W: number, t: BackgroundTask, at: number): string => {
+  const failed = t.status === 'failed' ? tr().isFailed : ''
+  const title = fitText(bgTitle(t), 13, W - 42 - 22 - (failed ? pillW(failed) + 8 : 0))
+  return svg(
+    W,
+    BG_H,
+    `<text class="s" x="14" y="25" text-anchor="middle" font-family="${FONT}" font-size="16">${BG_ICON[t.kind]}</text>
+<text class="t" x="42" y="16" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${failed ? pill(Math.round(42 + textWidth(title, 13) + 8), 4, failed) : ''}
+<text class="s" x="42" y="32" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(bgMeta(t, at))}</text>
+${statusMark(W - 8, 16, bgMark(t), accentOf())}
+<line class="ln" x1="0" y1="${BG_H - 0.5}" x2="${W}" y2="${BG_H - 0.5}"/>`,
+  )
+}
+
+// The clock ticks every second while an agent runs, every minute while only background
+// rows show a time (a cron shows its schedule), not at all otherwise. One timer: each
+// change of pace calls retick where it happens, which cancels it before arming the next.
+// The calls run one at a time, so a call that read the state before a change cannot undo
+// the one made after it.
+let reticking: Promise<void> = Promise.resolve()
+function retick($: EngineInterface): Promise<void> {
+  const run = reticking.then(() => repace($))
+  reticking = run.catch(() => undefined)
+  return run
+}
+
+async function repace($: EngineInterface): Promise<void> {
+  const isRunning = (await read($, agents)).some(a => a.status === 'running')
+  const bg = await read($, background)
+  const ms = isRunning ? 1000 : bg.some(t => isActive(t) && t.kind !== 'cron') ? 60_000 : 0
+  if (ms === tickMs) return
+  clockTick?.cancel()
+  tickMs = ms
+  clockTick = ms ? $.clock.every(ms, () => void $.clock.now().then(at => update($, now, () => at))) : null
+}
+
+// Writes the list only when it changed: every write redraws the pane.
+async function setBackground($: EngineInterface, change: (list: BackgroundTask[]) => BackgroundTask[]): Promise<void> {
+  const prev = await read($, background)
+  if (JSON.stringify(change(prev)) !== JSON.stringify(prev)) await update($, background, list => change(list).slice(-100))
+  await retick($)
+}
+
+// Ends the active tasks that match, failed when the word says so (`failed`, an error).
+async function finishTask($: EngineInterface, isIt: (t: BackgroundTask) => boolean, status: string): Promise<void> {
+  const at = await $.clock.now()
+  const ended = /fail|error/i.test(status) ? ('failed' as const) : ('done' as const)
+  // A failed notification can arrive after the Stop reconcile already ended the task as done.
+  const isOpen = (t: BackgroundTask) => isActive(t) || (ended === 'failed' && t.status === 'done')
+  await setBackground($, list => list.map(t => (isOpen(t) && isIt(t) ? { ...t, status: ended, endedAt: t.endedAt ?? at } : t)))
+}
+
+// A notification's status that ends its task: present, and not one that says it still runs.
+const isFinal = (status: string | undefined): status is string => !!status && !/^(running|pending|in_progress)$/i.test(status)
+
+const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+// A command or description on one line.
+const oneLine = (v: unknown): string => str(v).replace(/\s+/g, ' ').trim()
+
+// The engine clips a cron's prompt to 1000 chars and appends "… [+N chars]": true when
+// `listed` is `prompt`, whole or clipped.
+const isClipOf = (listed: string, prompt: string): boolean => {
+  const kept = listed.replace(/\s*…\s*\[\+\d+ chars\]$/, '')
+  return kept === listed ? listed === prompt : prompt.startsWith(kept)
+}
+
+// What a call started in the background, from its input and its result; null when nothing.
+const startedTask = (e: Record<string, unknown>, r: Record<string, unknown>): Omit<BackgroundTask, 'startedAt'> | null => {
+  if (e.tool === 'Bash' && str(r.backgroundTaskId)) return { id: str(r.backgroundTaskId), kind: 'shell', text: oneLine(e.command), status: 'running' }
+  if (e.tool === 'Monitor' && str(r.taskId)) return { id: str(r.taskId), kind: 'monitor', text: oneLine(e.description) || oneLine(e.command), status: 'running' }
+  if (e.tool === 'CronCreate' && str(r.id))
+    return { id: str(r.id), kind: 'cron', text: oneLine(e.prompt), status: 'scheduled', schedule: str(r.humanSchedule) || str(e.cron) }
+  // scheduledFor 0: the wakeup could not be armed.
+  if (e.tool === 'ScheduleWakeup' && typeof r.scheduledFor === 'number' && r.scheduledFor > 0 && !r.stopped)
+    return { id: `wake:${oneLine(e.prompt)}`, kind: 'wakeup', text: oneLine(e.reason) || oneLine(e.prompt), status: 'scheduled', nextAt: r.scheduledFor }
+  return null
+}
+
+// One press stops it, no confirmation: TaskStop for a shell or a monitor, CronDelete for a
+// cron, ScheduleWakeup's `stop` for a dynamic /loop. An error is toasted and the row stays.
+async function stopTask($: EngineInterface, t: BackgroundTask): Promise<void> {
+  const consent = `The user pressed Stop on the background ${t.kind} "${clip(bgTitle(t), 80)}" in the Agents panel.`
+  const call = t.kind === 'cron' ? { tool: 'CronDelete', id: t.id } : t.kind === 'wakeup' ? { tool: 'ScheduleWakeup', stop: true } : { tool: 'TaskStop', task_id: t.id }
+  try {
+    const r = await $.tool.call({ ...call, consent } as never)
+    if (r.deny !== undefined || r.isError) throw new Error(r.deny ?? r.text ?? str(r.result))
+  } catch (err) {
+    $.ui.toast(tr().stopFailed(bgTitle(t), err instanceof Error ? err.message : String(err)))
+    return
+  }
+  await finishTask($, x => x.id === t.id, 'killed')
+}
+
 // --- terminal drawing: the same rows in text.
 
 const ctxBar = (pct: number, width: number): string => {
@@ -902,16 +1041,7 @@ export const register: Register = (on, options) => {
       description: 'Show or hide the panel of subagents: running, finished and planned, with model, context, cost and time',
     })
 
-    // Ticks the running agents' clocks; quiet when nothing runs.
-    clockTick?.cancel()
-    clockTick = $.clock.every(1000, () => {
-      void (async () => {
-        const list = await read($, agents)
-        if (!list.some(a => a.status === 'running')) return
-        const at = await $.clock.now()
-        await update($, now, () => at)
-      })()
-    })
+    await retick($)
     themePath = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`
     themePoll?.cancel()
     themeEvery = 0
@@ -988,6 +1118,73 @@ export const register: Register = (on, options) => {
     }
   })
 
+  // Background work, never auto-opening the pane: a shell sent to the background, a monitor,
+  // a cron or a wakeup; a wakeup's `stop` ends the waiting wakeups.
+  on('tool.call', { tool: ['Bash', 'Monitor', 'CronCreate', 'ScheduleWakeup'] }, async ($, e, next) => {
+    const r = await next(e)
+    const result = !r.isError && r.result && typeof r.result === 'object' ? (r.result as Record<string, unknown>) : null
+    const task = result && startedTask(e as unknown as Record<string, unknown>, result)
+    // The tool has run: a failed bookkeeping write must not fail its call.
+    const record = async () => {
+      if (task) {
+        const at = await $.clock.now()
+        await setBackground($, list => [...list.filter(t => t.id !== task.id), { ...task, startedAt: at }])
+      } else if (e.tool === 'ScheduleWakeup' && result?.stopped) await finishTask($, t => t.kind === 'wakeup', 'killed')
+    }
+    await record().catch(() => undefined)
+    return r
+  })
+
+  // A background task's notification ends it: `<task-id>` and `<status>` in its text.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind === 'task-notification') {
+      for (const [block] of e.text.matchAll(/<task-notification>[\s\S]*?<\/task-notification>/g)) {
+        const tag = (k: string) => new RegExp(`<${k}>([^<]*)</${k}>`).exec(block)?.[1]?.trim()
+        const id = tag('task-id')
+        const status = tag('status')
+        if (isFinal(status)) await finishTask($, t => t.id === id, status).catch(() => undefined)
+      }
+    }
+    return next(e)
+  })
+
+  // A new, resumed or cleared session starts with no background rows; the next stop's
+  // reconcile adds back what still runs. A compaction keeps them.
+  on('classic.SessionStart', async ($, e, next) => {
+    const result = await next(e)
+    if (e.source !== 'compact') await setBackground($, () => []).catch(() => undefined)
+    return result
+  })
+
+  // At each stop the engine lists what is in flight: add what was missed, end what is gone.
+  on('classic.Stop', async ($, e, next) => {
+    const result = await next(e)
+    const crons = e.session_crons
+    if (!e.background_tasks || !crons) return result
+    const live = e.background_tasks.filter(t => t.type === 'shell' || t.type === 'monitor')
+    const ids = new Set([...live.map(t => t.id), ...crons.map(c => c.id)])
+    // A wakeup's row is keyed by its prompt, which the engine may have clipped.
+    const isWakeOf = (id: string) => crons.some(c => isClipOf(oneLine(c.prompt), id.slice('wake:'.length)))
+    const reconcile = async (at: number) =>
+      setBackground($, list => {
+        const known = new Set(list.map(t => t.id))
+        const wakes = list.filter(t => t.kind === 'wakeup').map(t => t.id.slice('wake:'.length))
+        const missed: BackgroundTask[] = [
+          ...live
+            .filter(t => !known.has(t.id))
+            .map(t => ({ id: t.id, kind: t.type as 'shell' | 'monitor', text: oneLine(t.command) || oneLine(t.description), status: 'running' as const, startedAt: at })),
+          ...crons
+            .filter(c => !known.has(c.id) && !wakes.some(p => isClipOf(oneLine(c.prompt), p)))
+            .map(c => ({ id: c.id, kind: 'cron' as const, text: oneLine(c.prompt), status: 'scheduled' as const, startedAt: at, schedule: c.schedule })),
+        ]
+        const isLive = (t: BackgroundTask) => ids.has(t.id) || (t.kind === 'wakeup' && isWakeOf(t.id))
+        return [...list.map(t => (isActive(t) && !isLive(t) ? { ...t, status: 'done' as const, endedAt: at } : t)), ...missed]
+      })
+    // Bookkeeping after the hooks have run: a failure here must not fail the stop.
+    await $.clock.now().then(reconcile).catch(() => undefined)
+    return result
+  })
+
   on('agent.spawn', async ($, e, next) => {
     const started = await next(e)
     if (started.deny !== undefined) return started
@@ -1013,6 +1210,7 @@ export const register: Register = (on, options) => {
       return [...list.filter(a => a.id !== run.id), run].slice(-200)
     })
     await update($, now, () => at)
+    await retick($)
     const f = await read($, flow)
     await autoOpen($, f && !f.isFinished ? f.title : 'savvy-flow')
     return started
@@ -1053,6 +1251,7 @@ export const register: Register = (on, options) => {
             },
       ),
     )
+    await retick($)
     return result
   })
 
@@ -1060,9 +1259,11 @@ export const register: Register = (on, options) => {
     const agentId = e.agentId
     if (agentId) {
       const at = await $.clock.now()
-      await update($, agents, list =>
+      let wasRunning = false
+      const after = await update($, agents, list =>
         list.map(a => {
           if (a.agentId !== agentId) return a
+          wasRunning = a.status === 'running'
           // A run whose steps went unseen still gets the turn's own sum.
           const fallback = a.steps === 0 && e.usage
           return {
@@ -1085,7 +1286,10 @@ export const register: Register = (on, options) => {
           }
         }),
       )
+      // The last running agent ended: fold the finished group once; a manual expand stays until the next run ends.
+      if (wasRunning && !after.some(a => a.status === 'running')) await update($, panel, prev => ({ ...prev, isDoneCollapsed: true }))
       await update($, now, () => at)
+      await retick($)
     }
     return next(e)
   })
@@ -1098,11 +1302,14 @@ export const register: Register = (on, options) => {
     const list = await read($, agents)
     const f = await read($, flow)
     const p: Panel = await read($, panel)
-    const at = Math.max(await read($, now), ...list.map(a => a.startedAt), 0)
+    const bg = await read($, background)
+    const at = Math.max(await read($, now), ...list.map(a => a.startedAt), ...bg.map(t => t.startedAt), 0)
 
     const running = list.filter(a => a.status === 'running').reverse()
     const finished = list.filter(a => a.status !== 'running').reverse()
     const planned = plannedOf(f, list)
+    const bgActive = bg.filter(isActive).reverse()
+    const bgEnded = bg.filter(x => !isActive(x)).reverse()
     const t = totals(list, at)
     // The pane's title says "Agents"; inside, only the flow's own name.
     const title = f && !f.isFinished ? f.title : ''
@@ -1110,7 +1317,7 @@ export const register: Register = (on, options) => {
     const toggleCompact = (
       <Button
         key="compact"
-        label={p.isCompact ? s.expand : s.collapse}
+        label={p.isCompact ? '⊞' : '⊟'}
         plain
         onPress={() => update($, panel, prev => ({ ...prev, isCompact: !prev.isCompact }))}
       />
@@ -1118,12 +1325,14 @@ export const register: Register = (on, options) => {
     const toggleDone = (
       <Button
         key="done"
-        label={`${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length}`}
+        label={`${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length + bgEnded.length}`}
         plain
         onPress={() => update($, panel, prev => ({ ...prev, isDoneCollapsed: !prev.isDoneCollapsed }))}
       />
     )
-    const isEmpty = list.length === 0 && planned.length === 0
+    const isEmpty = list.length === 0 && planned.length === 0 && bg.length === 0
+    const hasEnded = finished.length + bgEnded.length > 0
+    const stopButton = (x: BackgroundTask) => <Button key={`stop-${x.id}`} label="■" plain dimColor hover={{ color: pal?.red ?? RED }} onPress={() => stopTask($, x)} />
     const flagged = list.filter(needsAttention)
     const summary = `≈${fmtCost(t.cost)}, ${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
 
@@ -1134,6 +1343,13 @@ export const register: Register = (on, options) => {
         <Text key={key} dimColor>
           {text}
         </Text>
+      )
+      // The Stop button sits beside the drawing: the desktop would wrap anything inside it.
+      const bgCard = (x: BackgroundTask) => (
+        <Box key={`bg-${x.id}`} flexDirection="row" alignItems="center" gap={1}>
+          <Svg source={bgSvg(W - 56, x, at)} alt={`${bgTitle(x)}: ${bgMeta(x, at)}${x.status === 'failed' ? `, ${s.isFailed}` : ''}`} width={W - 56} height={BG_H} />
+          {isActive(x) ? stopButton(x) : null}
+        </Box>
       )
 
       if (p.isCompact) {
@@ -1156,11 +1372,14 @@ export const register: Register = (on, options) => {
           {running.map(a => (
             <Svg key={a.id} source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
           ))}
-          {finished.length > 0 && toggleDone}
+          {bgActive.length > 0 && section('h-bg', `${s.background} · ${bgActive.length}`)}
+          {bgActive.map(bgCard)}
+          {hasEnded && toggleDone}
           {!p.isDoneCollapsed &&
             finished.map(a => (
               <Svg key={a.id} source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
             ))}
+          {!p.isDoneCollapsed && bgEnded.map(bgCard)}
           {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
           {planned.map(pl => (
             <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
@@ -1214,6 +1433,28 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const bgRow = (x: BackgroundTask) => (
+      <Box key={`bg-${x.id}`} flexDirection="column" marginBottom={1}>
+        <Box flexDirection="row" gap={1}>
+          <Text color={accentOf()}>{BG_ICON[x.kind]}</Text>
+          <Text bold wrap="truncate-end">
+            {bgTitle(x)}
+          </Text>
+          {x.status === 'failed' ? (
+            <Text backgroundColor={pal?.red ?? RED} color={pal?.background ?? '#ffffff'} bold>
+              {` ${s.isFailed} `}
+            </Text>
+          ) : null}
+          <Text color={x.status === 'failed' ? 'red' : x.status === 'done' ? 'green' : accentOf()}>{STATUS_GLYPH[bgMark(x)]}</Text>
+          {isActive(x) ? stopButton(x) : null}
+        </Box>
+        <Text dimColor wrap="truncate-end">
+          {'  '}
+          {bgMeta(x, at)}
+        </Text>
+      </Box>
+    )
+
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between">
@@ -1251,8 +1492,11 @@ export const register: Register = (on, options) => {
             {isEmpty && <Text dimColor>{s.empty}</Text>}
             {running.length > 0 && <Text dimColor>{s.running} · {running.length}</Text>}
             {running.map(row)}
-            {finished.length > 0 && toggleDone}
+            {bgActive.length > 0 && <Text dimColor>{s.background} · {bgActive.length}</Text>}
+            {bgActive.map(bgRow)}
+            {hasEnded && toggleDone}
             {!p.isDoneCollapsed && finished.map(row)}
+            {!p.isDoneCollapsed && bgEnded.map(bgRow)}
             {planned.length > 0 && <Text dimColor>{s.planned} · {planned.length}</Text>}
             {planned.map(pl => {
               const tier = pl.tier in TIER_COLOR ? pl.tier : 'other'
@@ -1297,7 +1541,7 @@ export const register: Register = (on, options) => {
     const chip = !flagged
       ? null
       : e.surface !== 'terminal' && 'Svg' in ui
-        ? <ui.Svg key="savvy-chip" source={svg(pillW(chipText), 19, pill(0, 2, chipText))} alt={chipText} width={pillW(chipText)} height={19} />
+        ? <ui.Svg key="savvy-chip" source={svg(pillW(chipText), H, pill(0, (H - 15) / 2, chipText))} alt={chipText} width={pillW(chipText)} height={H} />
         : (
             <Text key="savvy-chip" backgroundColor={pal?.red ?? RED} color={pal?.background ?? '#ffffff'} bold>
               {` ${chipText} `}
