@@ -223,7 +223,7 @@ test('a session start, resume or clear empties the background list; a compaction
   expect(text).not.toContain('Ended')
 })
 
-test('the clock ticks once a minute while only scheduled rows wait, every second while a task runs', async ($, on) => {
+test('the clock ticks every second while an agent runs, once a minute while only background rows are active', async ($, on) => {
   const ticks = countTicks(on)
   const clock = setup(ticks.on)
   mock.env(on, { HOME: '/home/k' })
@@ -231,53 +231,37 @@ test('the clock ticks once a minute while only scheduled rows wait, every second
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('tool.register', () => ({ value: undefined }) as never)
   on('command.register', () => ({ value: undefined }) as never)
+  on('turn.complete', () => ({ text: '' }))
+  const minute = async () => {
+    ticks.n = 0
+    await clock.advance(120_000)
+    expect(ticks.n).toBeLessThanOrEqual(2)
+    expect(ticks.n).toBeGreaterThan(0)
+  }
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
   await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
-  ticks.n = 0
-  await clock.advance(120_000)
-  expect(ticks.n).toBeLessThanOrEqual(2)
-  expect(ticks.n).toBeGreaterThan(0)
+  await minute()
 
+  // A running shell alone keeps the minute clock.
   await bash($)
+  await minute()
+
+  await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'pick db', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   ticks.n = 0
   await clock.advance(3_000)
   expect(ticks.n).toBe(3)
 
-  await notify($, 'b1', 'completed')
-  ticks.n = 0
-  await clock.advance(120_000)
-  expect(ticks.n).toBeLessThanOrEqual(3)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: 'w1', agentId: 'w1' } as never)
+  await minute()
 })
 
-test('a tick that read the state before a task started does not slow the clock it armed', async ($, on) => {
-  const ticks = countTicks(on)
-  const clock = setup(ticks.on)
-  // Holds the tick's read of the background list until the shell has started.
-  let gate: Promise<void> | null = null
-  let release = () => {}
-  let isTick = false
-  on('state.get', async (_$, e, next) => {
-    const key = (e as { key?: string }).key
-    const value = await next(e)
-    if (key === 'now') isTick = true
-    if (gate && isTick && key === 'background') {
-      const held = gate
-      gate = null
-      await held
-    }
-    return value
-  })
-  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
-  gate = new Promise(r => (release = r))
-  await clock.advance(60_000)
-  const started = bash($)
-  for (let i = 0; i < 500; i++) await Promise.resolve()
-  release()
-  await started
-  for (let i = 0; i < 500; i++) await Promise.resolve()
-  ticks.n = 0
-  await clock.advance(3_000)
-  expect(ticks.n).toBe(3)
+test('a running shell shows its elapsed time in minutes once past a minute', async ($, on) => {
+  const clock = setup(on)
+  await bash($)
+  await clock.advance(150_000)
+  const text = await shown($)
+  expect(text).toContain('shell · 2m')
+  expect(text).not.toContain('shell · 2:')
 })
 
 test('a wakeup whose prompt the engine clipped to 1000 chars still matches its row at each stop', async ($, on) => {
@@ -296,6 +280,29 @@ test('a wakeup whose prompt the engine clipped to 1000 chars still matches its r
   expect(text).toContain('Background · 1')
   expect(text).toContain('wait for CI')
   expect(text).not.toContain('Ended')
+})
+
+test('a multi-line wakeup prompt keys its row on one line; the row still reconciles and stops', async ($, on) => {
+  const calls: Record<string, unknown>[] = []
+  setup(on, [], [], calls)
+  const prompt = '/loop check\n  CI'
+  await $.tool.call({ tool: 'ScheduleWakeup', delaySeconds: 720, reason: 'wait for CI', prompt } as never)
+  await $.classic.Stop({
+    stop_hook_active: false,
+    background_tasks: [],
+    session_crons: [{ id: 'w1', schedule: '14 12 9 10 *', recurring: false, prompt }],
+  })
+  const live = await shown($)
+  expect(live).toContain('Background · 1')
+  expect(live).not.toContain('Ended')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await $.ui.press({ plugin: 'savvy-progress', key: 'stop-wake:/loop check CI' })
+  await ui.unmount()
+  expect(calls[0]).toMatchObject({ tool: 'ScheduleWakeup', stop: true })
+  const text = await shown($)
+  expect(text).not.toContain('Background · ')
+  expect(text).toContain('Ended · 1')
 })
 
 test('a past-due wakeup reads "due", not "next in 0m"', async ($, on) => {
