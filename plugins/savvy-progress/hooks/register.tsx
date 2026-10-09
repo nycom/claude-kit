@@ -463,6 +463,11 @@ const CRAB_CSS = `<style>
 @keyframes wave{50%{transform:skewY(-12deg) scaleX(.85)}}
 .c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite}
 @keyframes fence{50%{transform:rotate(25deg)}}
+.c-implement.run .c1{animation:blink .5s steps(1) infinite}.c-implement.run .c2{animation:blink .5s steps(1) infinite -.25s}
+.c-review.run .chk{animation:blink 1s steps(1) infinite}.c-review.run .chk2{animation:blink 1s steps(1) infinite -.5s}
+.c-design.run .it{transform-origin:0 100%;animation:paint .5s ease-in-out infinite}
+@keyframes paint{50%{transform:rotate(-20deg)}}
+.c-test.run .bub{animation:blink .5s steps(1) infinite}.c-test.run .bub2{animation:blink .5s steps(1) infinite -.25s}
 @media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}
 </style>`
 
@@ -510,23 +515,65 @@ const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
     f(7, 11, 11, 1, INK); f(18, 11, 4, 3, INK)
     f(27, 6, 1, 9, '#C9CCD2', 'it'); f(26, 15, 3, 1, '#7A4A26', 'it')
   },
+  // Implementer: developer in a beanie at a laptop; the code lines type.
+  implement: (f, t) => {
+    crabBody(f)
+    stamp(f, 7, 4, ['......pp........', '....kkkkkkkk....', '..kkkkkkkkkkkk..', '.kkkkkkkkkkkkkk.', 'rrrrrrrrrrrrrrrr', 'rrrrrrrrrrrrrrrr'], { p: t, k: '#3E4A61', r: '#56637E' })
+    stamp(f, 22, 12, ['kkkkkkkk', 'kssssssk', 'kssssssk', 'kssssssk', 'kkkkkkkk', 'gggggggg'], { k: '#3A3A3C', s: '#1F2A36', g: '#8E929A' })
+    f(24, 13, 3, 1, t, 'c1'); f(25, 14, 3, 1, '#E6E8EE', 'c2'); f(24, 15, 2, 1, '#7DCFFF', 'c1')
+  },
+  // Reviewer: round glasses and a clipboard; the ticks go down the list.
+  review: (f, t) => {
+    crabBody(f, -4)
+    stamp(f, 8, 11, ['kkkk......kkkk', 'kllkkkkkkkkllk', 'kllk......kllk', 'kkkk......kkkk'], { k: '#2B2B2E', l: 'rgba(255,255,255,.35)' })
+    stamp(f, 22, 7, ['..mmm..', 'bbbbbbb', 'bwwwwwb', 'bwwwwwb', 'bwwwwwb', 'bwwwwwb', 'bwwwwwb', 'bbbbbbb'], { m: '#8E929A', b: '#7A4A26', w: '#F4F3EE' })
+    f(24, 10, 1, 1, t, 'chk'); f(25, 11, 1, 1, t, 'chk'); f(26, 10, 1, 1, t, 'chk'); f(27, 9, 1, 1, t, 'chk')
+    f(24, 13, 1, 1, t, 'chk2'); f(25, 14, 1, 1, t, 'chk2'); f(26, 13, 1, 1, t, 'chk2'); f(27, 12, 1, 1, t, 'chk2')
+  },
+  // Designer: beret and a palette; the brush paints.
+  design: (f, t) => {
+    crabBody(f, -4, 'it')
+    stamp(f, 6, 5, ['..........k.......', '...bbbbbbbbbb.....', '.bbbbbbbbbbbbbbb..', 'bbbbbbbbbbbbbbbbbb', '.dddddddddddddddd.'], { k: '#2B2B2E', b: '#C8423B', d: '#9E2F2A' })
+    stamp(f, 0, 13, ['.www.', 'wrwyw', 'wwbww', '.ww..'], { w: '#D9B38C', r: '#C8423B', y: '#F5C542', b: '#378ADD' })
+    f(25, 3, 1, 7, '#7A4A26', 'it'); f(25, 2, 1, 1, '#C9CCD2', 'it'); f(24, 0, 3, 2, t, 'it')
+  },
+  // Tester: lab goggles up and a test tube; the bubbles rise.
+  test: (f, t) => {
+    crabBody(f, -4)
+    f(7, 9, 16, 1, '#3A3A3C')
+    stamp(f, 8, 6, ['kkkk......kkkk', 'kllk......kllk', 'kkkkkkkkkkkkkk'], { k: '#3A3A3C', l: 'rgba(125,207,255,.75)' })
+    stamp(f, 24, 2, ['ggggg', '.g.g.', '.g.g.', '.glg.', '.glg.', '.glg.', '..g..'], { g: '#C9CCD2', l: t })
+    f(26, 3, 1, 1, '#E6E8EE', 'bub'); f(26, 1, 1, 1, '#E6E8EE', 'bub2')
+  },
   other: f => crabBody(f),
 }
 
-const costumeOf = (type: string): string => (type === 'Explore' ? 'explore' : tierOf(type))
+// Role costumes, from the type's name first (impeccable-finish-reviewer), then the task's words.
+// First match wins, in this order: "fix tests" is a tester, "review the design" a reviewer.
+const ROLES: [costume: string, words: RegExp][] = [
+  ['review', /\b(review|reviewer|audit|grill|verif|critique|inspect)/i],
+  ['test', /\b(test|tests|tester|qa|e2e|repro)/i],
+  ['design', /\b(design|designer|ui|ux|mockup|impeccable|visual|styl)/i],
+  ['implement', /\b(implement|implementer|build|fix|add|refactor|code|coder|develop|migrate|wire)/i],
+]
+const roleOf = (text: string): string | undefined => ROLES.find(([, words]) => words.test(text))?.[0]
+
+// The pirate is Explore's alone; a role beats the tier's costume, the card keeping the tier's colour.
+const costumeOf = (a: { type: string; description?: string }): string =>
+  a.type === 'Explore' ? 'explore' : (roleOf(a.type.replace(/^[^:]*:/, '')) ?? roleOf(a.description ?? '') ?? tierOf(a.type))
 
 const CRAB_SCALE = 1.1
 
 // Body and props nest inside `bd` so a prop rides the bob and adds its own motion;
 // legs stay outside it and step on their own.
-const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = CRAB_SCALE): string => {
+const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = CRAB_SCALE, tint = colorOf(costume)): string => {
   const groups = new Map<string, string[]>([['bd', []]])
   const f: Fill = (cx, cy, w, h, c, cls = 'bd') => {
     if (!groups.has(cls)) groups.set(cls, [])
     groups.get(cls)?.push(`<rect x="${cx}" y="${cy}" width="${w}" height="${h}" fill="${c}"/>`)
   }
   const draw = COSTUMES[costume] ?? ((g: Fill) => crabBody(g))
-  draw(f, colorOf(costume))
+  draw(f, tint)
   const group = (cls: string) => `<g class="${cls}">${(groups.get(cls) ?? []).join('')}</g>`
   const props = [...groups.keys()].filter(k => k !== 'bd' && k !== 'la' && k !== 'lb')
   const body = `<g class="bd">${(groups.get('bd') ?? []).join('')}${props.map(group).join('')}</g>`
@@ -606,7 +653,7 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
   return svg(
     W,
     h,
-    `${crab(0, 14, costumeOf(a.type), false, a.status === 'running')}
+    `${crab(0, 14, costumeOf(a), false, a.status === 'running', CRAB_SCALE, color)}
 <text class="t" x="42" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${flag ? pill(Math.round(42 + textWidth(title, 13) + 8), 6, flag) : ''}
 <text x="42" y="34" font-family="${FONT}" font-size="11"><tspan class="tc-${tier}">${xml(tier === 'other' ? a.type : tier)}</tspan><tspan class="s">  ${xml(meta.join('  ·  '))}</tspan></text>
 ${steps && stepsW > 30 ? `<text class="t" x="42" y="49" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(fitText(steps, 11, stepsW))}</text>` : ''}
@@ -651,8 +698,8 @@ ${statusMark(W - 8, 16, 'planned', color)}
 
 const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnType<typeof totals>): string => {
   const icons = [
-    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a.type), c: colorOf(tierOf(a.type)), s: 'running', dim: false })),
-    ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a.type), c: colorOf(tierOf(a.type)), s: a.status, dim: false })),
+    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false })),
+    ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false })),
     ...planned.map(p => ({ k: p.tier in TIER_COLOR ? p.tier : 'other', c: colorOf(p.tier), s: 'planned', dim: true })),
   ]
   const fit = Math.max(1, Math.floor((W - 150) / 36))
@@ -661,7 +708,7 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
   const body = shown
     .map(
       (ic, i) =>
-        crab(i * 36, 0, ic.k, ic.dim, ic.s === 'running') +
+        crab(i * 36, 0, ic.k, ic.dim, ic.s === 'running', CRAB_SCALE, ic.c) +
         (ic.s === 'running' ? `<circle class="live" cx="${i * 36 + 32}" cy="4" r="3" fill="${ic.c}"/>` : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
     )
     .join('')
