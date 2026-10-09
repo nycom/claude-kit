@@ -120,8 +120,6 @@ const STRINGS = {
     cost: 'Cost',
     tokens: 'Tokens',
     time: 'Time',
-    collapse: 'Collapse',
-    expand: 'Expand',
     running: 'Running',
     finished: 'Ended',
     planned: 'Planned',
@@ -161,8 +159,6 @@ const STRINGS = {
     cost: 'Стоимость',
     tokens: 'Токены',
     time: 'Время',
-    collapse: 'Свернуть',
-    expand: 'Развернуть',
     running: 'Работают',
     finished: 'Закончили',
     planned: 'Запланированы',
@@ -1321,7 +1317,7 @@ export const register: Register = (on, options) => {
     const toggleCompact = (
       <Button
         key="compact"
-        label={p.isCompact ? s.expand : s.collapse}
+        label={p.isCompact ? '⊞' : '⊟'}
         plain
         onPress={() => update($, panel, prev => ({ ...prev, isCompact: !prev.isCompact }))}
       />

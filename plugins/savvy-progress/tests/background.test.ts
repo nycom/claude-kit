@@ -327,3 +327,10 @@ test('a cron prompt, a monitor description and a wakeup reason show on one line,
   const text = await shown($)
   for (const line of ['watch the deploy log', 'check the deploy', 'wait for CI', 'tail the queue', 'poll the queue']) expect(text).toContain(line)
 })
+
+test('the compact toggle is an icon button, not a word', async ($, on) => {
+  setup(on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.findAll({ type: 'Button', text: '⊟' })).length).toBe(1)
+  await ui.unmount()
+})
