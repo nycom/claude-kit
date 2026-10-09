@@ -242,7 +242,8 @@ test('the clock ticks every second while an agent runs, once a minute while only
   await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
   await minute()
 
-  // A running shell alone keeps the minute clock.
+  // The cron gone, a running shell alone keeps the minute clock.
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [], session_crons: [] })
   await bash($)
   await minute()
 
@@ -255,6 +256,35 @@ test('the clock ticks every second while an agent runs, once a minute while only
   await minute()
 })
 
+test('a pace check that read the agents before one spawned cannot slow the clock the spawn armed', async ($, on) => {
+  const ticks = countTicks(on)
+  const clock = setup(ticks.on)
+  // Holds the cron's pace check at its read of the agents, until the spawn has had its turn.
+  let release = () => {}
+  const held = new Promise<void>(r => (release = r))
+  let onHeld = () => {}
+  const isHeld = new Promise<void>(r => (onHeld = r))
+  let isGated = true
+  on('state.get', async (_$, e, next) => {
+    const value = await next(e)
+    if (isGated && (e as { key?: string }).key === 'agents') {
+      isGated = false
+      onHeld()
+      await held
+    }
+    return value
+  })
+  const cron = $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  await isHeld
+  const spawn = $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'pick db', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+  for (let i = 0; i < 500; i++) await Promise.resolve()
+  release()
+  await Promise.all([cron, spawn])
+  ticks.n = 0
+  await clock.advance(3_000)
+  expect(ticks.n).toBe(3)
+})
+
 test('a running shell shows its elapsed time in minutes once past a minute', async ($, on) => {
   const clock = setup(on)
   await bash($)
@@ -264,13 +294,23 @@ test('a running shell shows its elapsed time in minutes once past a minute', asy
   expect(text).not.toContain('shell · 2:')
 })
 
-test('a shell in its first minute shows 0m, not a seconds reading the minute clock would freeze', async ($, on) => {
+test('a just-started shell shows 0m, not a seconds reading the minute clock would freeze', async ($, on) => {
   const clock = setup(on)
   await bash($)
   await clock.advance(30_000)
   const text = await shown($)
   expect(text).toContain('shell · 0m')
   expect(text).not.toContain('shell · 0:')
+})
+
+test('a running shell rounds to the nearest minute, so the minute clock never leaves it two behind', async ($, on) => {
+  const clock = setup(on)
+  // The minute clock is already armed when the shell starts, a second later: its next tick reads 59 s.
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  await clock.advance(1_000)
+  await bash($)
+  await clock.advance(59_000)
+  expect(await shown($)).toContain('shell · 1m')
 })
 
 test('a wakeup whose prompt the engine clipped to 1000 chars still matches its row at each stop', async ($, on) => {
