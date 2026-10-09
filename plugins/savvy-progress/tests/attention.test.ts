@@ -4,6 +4,8 @@ const STEP = 'mcp__savvy-progress__step'
 
 test('step flags failed and blocked workers, toasting once per reason', async ($, on) => {
   mock.clock(on)
+  // Nothing beneath the plugins draws the band; the engine's base answer is empty.
+  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
   const toasts: string[] = []
   on('ui.toast', (_$, e) => (toasts.push(e.text), { value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -73,7 +75,6 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
   // An unnamed run never clears another unnamed run's flag.
   await spawn('...')
   await step('w5', { blocked: 'which env?' })
-  await end('w5')
   await spawn('!!!')
   expect(await shown('Pane')).toContain('↳ which env?')
 
@@ -91,3 +92,49 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
   expect(await shown('Pane')).not.toContain('lower total| FAILED')
   expect(await shown('Pane')).not.toContain('first total| FAILED')
 })
+
+const setup = (on: Parameters<Parameters<typeof test>[1]>[1], below = '') => {
+  mock.clock(on)
+  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [below] }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
+  on('turn.complete', () => ({ text: '' }))
+}
+const spawnW1 = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
+  $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'pick db', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+const mountText = async ($: Parameters<Parameters<typeof test>[1]>[0], surface: 'terminal' | 'desktop', component: 'Pane' | 'AbovePrompt') => {
+  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface, component, requestId: component === 'Pane' ? 'savvy-agents' : undefined, props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+  const all = await ui.findAll({})
+  const text = all.map(n => `${n.text ?? ''}${(n as { props?: { alt?: string } }).props?.alt ?? ''}`).join('|')
+  await ui.unmount()
+  return text
+}
+
+test('an ended worker is no longer flagged: the band chip and the card clear', async ($, on) => {
+  setup(on)
+  await spawnW1($)
+  await $.tool.call({ tool: STEP, done: 1, blocked: 'Postgres or SQLite?', agentId: 'w1' } as never)
+  expect(await mountText($, 'terminal', 'AbovePrompt')).toContain('⚠ 1 needs attention')
+  expect(await mountText($, 'terminal', 'Pane')).toContain('NEEDS INPUT')
+
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: 'w1', agentId: 'w1' } as never)
+  expect(await mountText($, 'terminal', 'AbovePrompt')).not.toContain('needs attention')
+  expect(await mountText($, 'terminal', 'Pane')).not.toContain('NEEDS INPUT')
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: the flag band sits above what the mods beneath draw`, async ($, on) => {
+    setup(on, 'other mod')
+    await spawnW1($)
+    await $.tool.call({ tool: STEP, done: 1, blocked: 'Postgres or SQLite?', agentId: 'w1' } as never)
+    const drawn = await mountText($, surface, 'AbovePrompt')
+    const ui = await $.ui.mount({ plugin: 'savvy-progress', surface, component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+    const [band] = await ui.findAll({})
+    // The flag row first, then what the mods beneath drew.
+    expect(band.children.map(c => c.type)).toEqual(['Box', 'Text'])
+    expect(JSON.stringify(band.children[0])).toContain('needs attention')
+    expect(band.children[1].children).toEqual(['other mod'])
+    await ui.unmount()
+  })
+}

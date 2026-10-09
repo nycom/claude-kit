@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentRun, Flow, Panel, Phase, PlannedTask } from '../types'
+import type { AgentRun, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
 
 const flow = atom({ plugin: 'savvy-progress', key: 'flow' } as const, null)
 const agents = atom({ plugin: 'savvy-progress', key: 'agents' } as const, [])
@@ -11,6 +11,7 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
   autoOpenedFor: '',
 })
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
+const theme = atom({ plugin: 'savvy-progress', key: 'theme' } as const, null)
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
@@ -18,6 +19,9 @@ const PANE = 'savvy-agents'
 const PHASES: readonly Phase[] = ['plan', 'design', 'delegate', 'review', 'close']
 const ACCENT = '#8f8cf4'
 const DONE = '#5fbf8f'
+const THEME_FILE = '.local/state/omarchy/current/theme/colors.toml'
+const THEME_POLL_MS = 2000
+const THEME_KEYS = ['foreground', 'accent', 'muted', 'red', 'selection', 'background'] as const
 
 type ProgressInput = {
   title?: string
@@ -26,6 +30,65 @@ type ProgressInput = {
   phase?: Phase
   finished?: boolean
   tasks?: { title?: string; tier?: string; after?: number[] }[]
+}
+
+// The Omarchy palette, when its file exists; render handlers copy the atom here and
+// the drawings read it, so a missing file (null) keeps every default colour.
+let pal: Palette | null = null
+let themePoll: { cancel(): void } | null = null
+const accentOf = (): string => pal?.accent ?? ACCENT
+
+// Appended after the default styles (same specificity, later wins) in light and dark alike.
+// Tile labels turn to the text colour: muted on the selection tile is too faint to read.
+const themeCss = (): string =>
+  pal
+    ? `<style>${[
+        pal.foreground && `.t{fill:${pal.foreground}}`,
+        pal.muted && `.s,.m,.tk{fill:${pal.muted}}`,
+        pal.foreground && `.tl{fill:${pal.foreground};fill-opacity:.7}`,
+        pal.selection && `.k{fill:${pal.selection}}.ln{stroke:${pal.selection}}`,
+        pal.red && `.r{fill:${pal.red}}`,
+        // Tiles take the theme's page colour: a quiet card, as the defaults draw it.
+        pal.background && `.rt,.tile{fill:${pal.background}}`,
+      ].join('')}</style>`
+    : ''
+
+// The same reading as filetree's and cache-tax's copies: named keys first, then the
+// terminal colorN slots, and the dark background over the plain one.
+const THEME_FALLBACK: Record<(typeof THEME_KEYS)[number], string[]> = {
+  foreground: ['foreground', 'color7'],
+  accent: ['accent', 'color4'],
+  muted: ['muted', 'color8'],
+  red: ['red', 'color1'],
+  selection: ['selection'],
+  background: ['dark_background', 'background'],
+}
+let themeMtime = 0
+
+async function loadTheme($: EngineInterface): Promise<void> {
+  const path = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`
+  let next: Palette | null = null
+  try {
+    // A stat per poll; the file is read only when it changed.
+    const stat = await $.fs.stat(path)
+    if (stat.kind !== 'file') throw new Error('no theme file')
+    if (stat.mtimeMs === themeMtime) return
+    themeMtime = stat.mtimeMs
+    const toml = String(await $.fs.read(path))
+    const get = (k: string) => toml.match(new RegExp(`^${k}\\s*=\\s*"(#[0-9a-fA-F]{6})"`, 'm'))?.[1]
+    const found = Object.fromEntries(
+      THEME_KEYS.flatMap(k => {
+        const hex = THEME_FALLBACK[k].map(get).find(Boolean)
+        return hex ? [[k, hex]] : []
+      }),
+    )
+    if (Object.keys(found).length) next = found
+  } catch {
+    // No theme file: the defaults stay.
+    themeMtime = 0
+  }
+  // An atom update redraws every reader, so only write a palette that changed.
+  if (JSON.stringify(next) !== JSON.stringify(await read($, theme))) await update($, theme, () => next)
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +281,7 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
   const title = fitText(f.title, 13, Math.max(60, W * 0.4))
   const BAR_X = Math.round(16 + textWidth(title, 13) + 12)
   const BAR_W = Math.max(60, W - BAR_X - 46 - CRAB_W)
-  const color = f.isFinished ? DONE : ACCENT
+  const color = f.isFinished ? DONE : accentOf()
   const y0 = (H - BAR_H) / 2
   const fillW = Math.round(BAR_W * ratio(f))
   const runW = f.total ? Math.round((BAR_W * Math.min(f.total, f.done + f.running)) / f.total) : 0
@@ -256,6 +319,7 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
 <style>
 .t{fill:#1f1f1f}.m{fill:#6b6b68}.k{fill:#e4e4e2}.tk{fill:#b4b4b0}
 @media (prefers-color-scheme: dark){.t{fill:#ececec}.m{fill:#9a9a9a}.k{fill:#2c2c2c}.tk{fill:#5a5a5a}}
+</style>${themeCss()}<style>
 /* Pixels twinkle in four out-of-phase groups; a finished bar settles to a slow glow. */
 .t0,.t1,.t2,.t3{animation:tw ${f.isFinished ? 3.2 : 2.2}s ease-in-out infinite}
 .t1{animation-duration:${f.isFinished ? 3.8 : 2.8}s;animation-delay:-.7s}.t2{animation-duration:${f.isFinished ? 4.4 : 1.9}s;animation-delay:-1.3s}.t3{animation-duration:${f.isFinished ? 3.5 : 3.3}s;animation-delay:-.4s}
@@ -588,7 +652,7 @@ const statusMark = (x: number, y: number, status: string, color: string): string
 }
 
 const svg = (W: number, H: number, body: string): string =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${PANE_CSS}${CRAB_CSS}${body}</svg>`
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${PANE_CSS}${themeCss()}${CRAB_CSS}${body}</svg>`
 
 // The pane's own title already says "Agents": the header names the flow, if any.
 const headerSvg = (W: number, title: string, t: ReturnType<typeof totals>): string => {
@@ -598,7 +662,7 @@ const headerSvg = (W: number, title: string, t: ReturnType<typeof totals>): stri
   const top = title ? 28 : 0
   const tile = (i: number, k: string, v: string) =>
     `<rect class="tile" x="${i * (tw + gap)}" y="${top}" width="${tw}" height="40" rx="8"/>
-<text class="s" x="${i * (tw + gap) + 9}" y="${top + 16}" font-family="${FONT}" font-size="11">${k}</text>
+<text class="s tl" x="${i * (tw + gap) + 9}" y="${top + 16}" font-family="${FONT}" font-size="11">${k}</text>
 <text class="t" x="${i * (tw + gap) + 9}" y="${top + 33}" font-family="${FONT}" font-size="15" font-weight="600" font-variant-numeric="tabular-nums">${v}</text>`
   return svg(
     W,
@@ -825,6 +889,9 @@ export const register: Register = (on, options) => {
         await update($, now, () => at)
       })()
     })
+    await loadTheme($)
+    themePoll?.cancel()
+    themePoll = $.clock.every(THEME_POLL_MS, () => void loadTheme($))
     return started
   })
 
@@ -873,7 +940,7 @@ export const register: Register = (on, options) => {
         const reason = run.blocked ? `input:${run.blocked}` : needsAttention(run) ? 'failed' : undefined
         alert =
           reason && reason !== a.alertedFor
-            ? `${s.agent} ${run.description}: ${run.blocked ? `${s.toastInput} — ${run.blocked}` : s.toastFailed(run.failedAttempts ?? 0)}`
+            ? `${s.agent} ${run.description}: ${run.blocked ? `${s.toastInput} — ${(run.blocked.length > 120 ? `${run.blocked.slice(0, 119)}…` : run.blocked)}` : s.toastFailed(run.failedAttempts ?? 0)}`
             : ''
         return { ...run, alertedFor: reason }
       }),
@@ -983,6 +1050,8 @@ export const register: Register = (on, options) => {
             ...a,
             status: e.reason === 'answer' ? ('done' as const) : ('failed' as const),
             endedAt: at,
+            // An ended worker can no longer take an answer.
+            blocked: undefined,
             ...(fallback && e.usage
               ? {
                   model: e.usage.model || a.model,
@@ -1006,6 +1075,7 @@ export const register: Register = (on, options) => {
     const s = tr()
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
+    pal = await read($, theme)
     const list = await read($, agents)
     const f = await read($, flow)
     const p: Panel = await read($, panel)
@@ -1083,9 +1153,9 @@ export const register: Register = (on, options) => {
     // Terminal: the same content in text rows.
     const cols = Math.max(24, e.props.bodyColumns || 40)
     const barW = Math.max(6, Math.min(20, cols - 34))
-    // Fixed white on RED: the same contrast on any terminal theme.
+    // Fixed white on RED (the palette's background on its red): the same contrast on any terminal theme.
     const flagText = (a: AgentRun) => (
-      <Text backgroundColor={RED} color="#ffffff" bold>
+      <Text backgroundColor={pal?.red ?? RED} color={pal?.background ?? '#ffffff'} bold>
         {` ${flagOf(a)} `}
       </Text>
     )
@@ -1186,11 +1256,15 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    pal = await read($, theme)
     const f = await read($, flow)
     const list = await read($, agents)
-    const flagged = list.filter(needsAttention).length
+    // Only a running worker can still be waiting or failing; an ended one is history.
+    const flagged = list.filter(a => a.status === 'running' && needsAttention(a)).length
     // With no flow the band still shows up for agents that need attention.
     if ((f === null && !flagged) || e.props.hasSurvey) return next(e)
+    // The band sits above what the mods beneath draw (skins' rings, cache-tax), never in its place.
+    const theirs = await next(e)
 
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
@@ -1206,15 +1280,18 @@ export const register: Register = (on, options) => {
       : e.surface !== 'terminal' && 'Svg' in ui
         ? <ui.Svg key="savvy-chip" source={svg(pillW(chipText), 19, pill(0, 2, chipText))} alt={chipText} width={pillW(chipText)} height={19} />
         : (
-            <Text key="savvy-chip" backgroundColor={RED} color="#ffffff" bold>
+            <Text key="savvy-chip" backgroundColor={pal?.red ?? RED} color={pal?.background ?? '#ffffff'} bold>
               {` ${chipText} `}
             </Text>
           )
     if (f === null) {
       return (
-        <Box flexDirection="row" alignItems="center" gap={1}>
-          {chip}
-          {crewButton}
+        <Box flexDirection="column">
+          <Box flexDirection="row" alignItems="center" gap={1}>
+            {chip}
+            {crewButton}
+          </Box>
+          {theirs}
         </Box>
       )
     }
@@ -1235,11 +1312,14 @@ export const register: Register = (on, options) => {
       // and their gaps. No floor above the slot: a row wider than it would wrap.
       const width = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 96 - (flagged ? pillW(chipText) + 8 : 0)))
       return (
-        <Box flexDirection="row" alignItems="center" gap={1}>
-          <Svg source={rowSvg(f, width, isWorking)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width} height={H} />
-          {chip}
-          {crewButton}
-          {dismiss}
+        <Box flexDirection="column">
+          <Box flexDirection="row" alignItems="center" gap={1}>
+            <Svg source={rowSvg(f, width, isWorking)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width} height={H} />
+            {chip}
+            {crewButton}
+            {dismiss}
+          </Box>
+          {theirs}
         </Box>
       )
     }
@@ -1248,18 +1328,21 @@ export const register: Register = (on, options) => {
     const titleW = Math.max(8, Math.min(30, f.title.length + 2, Math.floor(cols / 3)))
     const width = Math.max(6, Math.min(40, cols - titleW - 32))
     return (
-      <Box flexDirection="row" gap={2}>
-        <Box width={titleW} flexShrink={0}>
-          <Text color={f.isFinished ? DONE : ACCENT}>● </Text>
-          <Text wrap="truncate-end">{f.title}</Text>
+      <Box flexDirection="column">
+        <Box flexDirection="row" gap={2}>
+          <Box width={titleW} flexShrink={0}>
+            <Text color={f.isFinished ? DONE : accentOf()}>● </Text>
+            <Text wrap="truncate-end">{f.title}</Text>
+          </Box>
+          <Text color={f.isFinished ? DONE : accentOf()}>{barText(f, width)}</Text>
+          <Text bold>{label(f)}</Text>
+          <Text dimColor>{percent}</Text>
+          <Text color={CLAY}>▣</Text>
+          {chip}
+          {crewButton}
+          {dismiss}
         </Box>
-        <Text color={f.isFinished ? DONE : ACCENT}>{barText(f, width)}</Text>
-        <Text bold>{label(f)}</Text>
-        <Text dimColor>{percent}</Text>
-        <Text color={CLAY}>▣</Text>
-        {chip}
-        {crewButton}
-        {dismiss}
+        {theirs}
       </Box>
     )
   })
