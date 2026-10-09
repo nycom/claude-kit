@@ -166,3 +166,49 @@ test('desktop: a redraw a second later carries each platter on by a second, back
   expect(before.length).toBe(2)
   expect(after.map((d, k) => Math.round((((d - (before[k] ?? 0)) % 1.8) + 1.8) % 1.8 * 1000))).toEqual([1000, 1000])
 })
+
+// A planned task starts when an agent's description is its title or begins with it as a whole word.
+const plan = ($: $T, ...titles: string[]) =>
+  $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Ship it', phase: 'delegate', done: 0, total: titles.length, tasks: titles.map(title => ({ title, tier: 'light' })) } as never)
+const planned = async ($: $T) => {
+  const labels = (await leaves($, 'terminal')).map(labelOf)
+  return { head: labels.find(l => l.startsWith('Planned')), rows: labels.filter(l => /\d\. kit/.test(l)) }
+}
+
+test('a planned task leaves Planned when an agent whose description starts with its title spawns', async ($, on) => {
+  setup(on)
+  await plan($, 'kit-pr2')
+  expect((await planned($)).head).toBe('Planned · 1')
+  await spawn($, 'kit-pr2 implement')
+  const labels = (await leaves($, 'terminal')).map(labelOf)
+  expect(labels.some(l => l.startsWith('Planned'))).toBe(false)
+  expect(labels.some(l => l.includes('Running · 1'))).toBe(true)
+  expect(labels.some(l => l.includes('kit-pr2 implement'))).toBe(true)
+})
+
+test('the longest matching title owns the agent: "kit-pr2 review" starts kit-pr2, not kit', async ($, on) => {
+  setup(on)
+  await plan($, 'kit', 'kit-pr2')
+  await spawn($, 'kit-pr2 review c1')
+  const p = await planned($)
+  expect(p.head).toBe('Planned · 1')
+  expect(p.rows.length).toBeGreaterThan(0)
+  expect(p.rows.some(r => r.includes('1. kit '))).toBe(true)
+  expect(p.rows.some(r => r.includes('kit-pr2'))).toBe(false)
+})
+
+test('a title is a whole word: "kit-pr2x implement" does not start "kit-pr2"', async ($, on) => {
+  setup(on)
+  await plan($, 'kit-pr2')
+  await spawn($, 'kit-pr2x implement')
+  expect((await planned($)).head).toBe('Planned · 1')
+})
+
+test('a respawn with the identical description is still round 2', async ($, on) => {
+  setup(on)
+  await plan($, 'kit-pr2')
+  await spawn($, 'kit-pr2 implement')
+  await $.agent.spawn({ tool_use_id: 'again', prompt: '', description: 'kit-pr2 implement', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+  const labels = (await leaves($, 'terminal')).map(labelOf)
+  expect(labels.some(l => l.includes('Running · 2'))).toBe(true)
+})

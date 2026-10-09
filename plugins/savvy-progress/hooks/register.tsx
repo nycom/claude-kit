@@ -499,10 +499,18 @@ const elapsed = (a: { startedAt: number; endedAt?: number }, at: number): number
 
 type Planned = PlannedTask & { n: number }
 
+// The task an agent description belongs to: it equals the title or starts with it as a whole word.
+// Of several titles that fit, the longest wins, so "kit-pr2 review" is kit-pr2's and not kit's.
+const titleOf = (titles: string[], description: string): string | undefined => {
+  const d = norm(description)
+  return titles.map(norm).filter(t => d === t || d.startsWith(`${t} `)).sort((a, b) => b.length - a.length)[0]
+}
+
 const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
   if (!f || f.isFinished) return []
-  const started = new Set(list.map(a => norm(a.description)))
-  return (f.tasks ?? []).map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
+  const tasks = f.tasks ?? []
+  const started = new Set(list.map(a => titleOf(tasks.map(t => t.title), a.description)))
+  return tasks.map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
 }
 
 const totals = (list: AgentRun[], at: number) => {
@@ -1031,7 +1039,7 @@ export const register: Register = (on, options) => {
           tasks: {
             type: 'array',
             description:
-              'The planned worker tasks in order, numbered from 1. Each title must equal the Agent tool `description` the task will be delegated with, so the panel can match runs to tasks.',
+              'The planned worker tasks in order, numbered from 1. Each title must equal the Agent tool `description` the task will be delegated with, or start it, so the panel can match runs to tasks.',
             items: {
               type: 'object',
               properties: {
