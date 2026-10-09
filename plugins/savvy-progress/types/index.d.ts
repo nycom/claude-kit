@@ -38,6 +38,10 @@ export type AgentRun = {
   stepDone?: number
   stepTotal?: number
   stepNote?: string
+  /** `step` calls with `failed: true`; three or more flag the card. */
+  failedAttempts?: number
+  /** The question the worker is waiting on; its next `step` call without it clears it. */
+  blocked?: string
 }
 
 export type Panel = {
@@ -46,6 +50,9 @@ export type Panel = {
   autoOpenedFor: string
 }
 
+/** Omarchy colors.toml entries by key; absent keys keep the default colour. */
+export type Palette = Partial<Record<'foreground' | 'accent' | 'muted' | 'red' | 'selection' | 'background', string>>
+
 declare module 'claude-code' {
   interface PluginState {
     'savvy-progress': {
@@ -53,6 +60,7 @@ declare module 'claude-code' {
       agents: AgentRun[]
       panel: Panel
       now: number
+      theme: Palette | null
     }
   }
 }
