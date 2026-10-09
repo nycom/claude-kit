@@ -42,11 +42,11 @@ The panel also lists background work that is not a subagent, under **Background 
 
 While no agent runs, running times and countdowns refresh once a minute, so a reading can be a minute behind; a cron alone refreshes nothing, as its schedule doesn't change.
 
-Workflows and subagents are not listed here; their agents are already crabs. A background task never opens the panel by itself.
+Workflows and subagents are not listed here; their agents are already crabs. A background task never opens the panel by itself, and the compact panel leaves background rows out.
 
-Each running or scheduled row has a **Stop** button (ended rows don't); one press stops it, with no confirmation: TaskStop for a shell or a monitor, CronDelete for a cron job, ScheduleWakeup's `stop` for a dynamic `/loop`. If the call fails, the error is toasted and the row stays. Stop goes through Claude Code's normal permission check, so in some permission modes it may ask first or be refused.
+Each running or scheduled row has a **Stop** button, a dim **■** that turns red on hover (ended rows don't); one press stops it, with no confirmation: TaskStop for a shell or a monitor, CronDelete for a cron job, ScheduleWakeup's `stop` for a dynamic `/loop`. If the call fails, the error is toasted and the row stays. Stop goes through Claude Code's normal permission check, so in some permission modes it may ask first or be refused.
 
-A task's completion notification moves it to **Ended** with its duration; a failed one gets a red **failed** label there (history only: no attention chip). When Claude stops, the panel matches its rows against the session's in-flight tasks and crons: it adds what it missed and ends what is gone. A row it adds counts its time from that stop, crons show the raw cron expression, and a monitor takes the type the engine lists it under, currently shell. A new, resumed or cleared session starts with an empty list, refilled at the next stop; a compaction keeps the list.
+A task's completion notification moves it to **Ended** with its duration, and the **Ended · N** count includes it; a failed one gets a red **failed** label there (history only: no attention chip). When Claude stops, the panel matches its rows against the session's in-flight tasks and crons: it adds what it missed and ends what is gone. A row it adds counts its time from that stop, crons show the raw cron expression, and a monitor takes the type the engine lists it under, currently shell. A new, resumed or cleared session starts with an empty list, refilled at the next stop; a compaction keeps the list.
 
 ## Crab costumes
 
