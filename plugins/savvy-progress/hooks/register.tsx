@@ -838,13 +838,13 @@ const BG_ICON: Record<BackgroundTask['kind'], string> = { shell: '$', monitor: '
 
 const bgTitle = (t: BackgroundTask): string => t.text || tr().kinds[t.kind]
 
-// What runs shows its time so far to the nearest minute (the clock may tick only once a
-// minute, so a seconds reading would freeze; between those ticks it reads under 90 s behind),
-// what waits its countdown, what ended its duration.
+// What runs shows its time so far in whole minutes, "<1m" in the first (the clock may tick
+// only once a minute, so a seconds reading would freeze), what waits its countdown, what
+// ended its duration.
 const bgMeta = (t: BackgroundTask, at: number): string => {
   const s = tr()
   const ms = elapsed(t, at)
-  if (t.status === 'running') return `${s.kinds[t.kind]} · ${fmtIn(Math.round(ms / 60_000) * 60_000)}`
+  if (t.status === 'running') return `${s.kinds[t.kind]} · ${ms < 60_000 ? '<1m' : fmtIn(Math.floor(ms / 60_000) * 60_000)}`
   if (t.status !== 'scheduled') return `${s.kinds[t.kind]} · ${fmtTime(ms)}`
   return `${s.kinds[t.kind]} · ${t.nextAt ? (t.nextAt > at ? s.nextIn(fmtIn(t.nextAt - at)) : s.due) : (t.schedule ?? '')}`
 }
@@ -868,7 +868,7 @@ ${statusMark(W - 8, 16, bgMark(t), accentOf())}
 }
 
 // The clock ticks every second while an agent runs, every minute while only background
-// rows are active (their times show in minutes), not at all otherwise. One timer: each
+// rows show a time (a cron shows its schedule), not at all otherwise. One timer: each
 // change of pace calls retick where it happens, which cancels it before arming the next.
 // The calls run one at a time, so a call that read the state before a change cannot undo
 // the one made after it.
@@ -882,7 +882,7 @@ function retick($: EngineInterface): Promise<void> {
 async function repace($: EngineInterface): Promise<void> {
   const isRunning = (await read($, agents)).some(a => a.status === 'running')
   const bg = await read($, background)
-  const ms = isRunning ? 1000 : bg.some(isActive) ? 60_000 : 0
+  const ms = isRunning ? 1000 : bg.some(t => isActive(t) && t.kind !== 'cron') ? 60_000 : 0
   if (ms === tickMs) return
   clockTick?.cancel()
   tickMs = ms

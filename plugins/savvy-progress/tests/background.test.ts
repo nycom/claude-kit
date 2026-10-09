@@ -223,7 +223,7 @@ test('a session start, resume or clear empties the background list; a compaction
   expect(text).not.toContain('Ended')
 })
 
-test('the clock ticks every second while an agent runs, once a minute while only background rows are active', async ($, on) => {
+test('the clock ticks every second while an agent runs, once a minute while a background row shows a time, not for a cron alone', async ($, on) => {
   const ticks = countTicks(on)
   const clock = setup(ticks.on)
   mock.env(on, { HOME: '/home/k' })
@@ -239,8 +239,11 @@ test('the clock ticks every second while an agent runs, once a minute while only
     expect(ticks.n).toBeGreaterThan(0)
   }
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
+  // A cron shows its schedule, which no tick changes.
   await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
-  await minute()
+  ticks.n = 0
+  await clock.advance(120_000)
+  expect(ticks.n).toBe(0)
 
   // The cron gone, a running shell alone keeps the minute clock.
   await $.classic.Stop({ stop_hook_active: false, background_tasks: [], session_crons: [] })
@@ -294,22 +297,14 @@ test('a running shell shows its elapsed time in minutes once past a minute', asy
   expect(text).not.toContain('shell · 2:')
 })
 
-test('a just-started shell shows 0m, not a seconds reading the minute clock would freeze', async ($, on) => {
+test('a running shell reads "<1m" in its first minute, then whole minutes rounded down', async ($, on) => {
   const clock = setup(on)
+  // An agent's clock ticks every second, so the reading is exact.
+  await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'pick db', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   await bash($)
   await clock.advance(30_000)
-  const text = await shown($)
-  expect(text).toContain('shell · 0m')
-  expect(text).not.toContain('shell · 0:')
-})
-
-test('a running shell rounds to the nearest minute, so the minute clock never leaves it two behind', async ($, on) => {
-  const clock = setup(on)
-  // The minute clock is already armed when the shell starts, a second later: its next tick reads 59 s.
-  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
-  await clock.advance(1_000)
-  await bash($)
-  await clock.advance(59_000)
+  expect(await shown($)).toContain('shell · <1m')
+  await clock.advance(60_000)
   expect(await shown($)).toContain('shell · 1m')
 })
 

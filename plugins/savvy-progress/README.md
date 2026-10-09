@@ -36,9 +36,11 @@ A toast fires on a crossing only: the failed count reaching three, or a new ques
 
 The panel also lists background work that is not a subagent, under **Background · N**:
 
-- **Shells**: a Bash command run in the background (`run_in_background`, or sent there with Ctrl+B), with its command and running time.
-- **Monitors**: the Monitor tool, with its description and running time.
+- **Shells**: a Bash command run in the background (`run_in_background`, or sent there with Ctrl+B), with its command and running time in whole minutes, "<1m" in the first, then "1m", "2m".
+- **Monitors**: the Monitor tool, with its description and running time, in the same minutes.
 - **Scheduled**: CronCreate jobs (a `/loop` on an interval included), with the prompt and the schedule, "every 5 minutes"; and ScheduleWakeup (a dynamic `/loop`), with the reason and a countdown, "next in 12m", or "due" once its time has passed.
+
+While no agent runs, running times and countdowns refresh once a minute, so a reading can be a minute behind; a cron alone refreshes nothing, as its schedule doesn't change.
 
 Workflows and subagents are not listed here; their agents are already crabs. A background task never opens the panel by itself.
 
