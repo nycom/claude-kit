@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, HookFailure, Register, ResolveInput } from 'claude-code'
 
 import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
 
@@ -71,6 +71,17 @@ const THEME_FALLBACK: Record<keyof Palette, string[]> = {
   background: ['dark_background', 'background'],
 }
 let themeMtime = 0
+
+// A ui.render hook that fails leaves the engine's own drawing, which names no cause; this line does.
+// Only Box and Text, so it cannot fail the way the drawing did.
+const failedLine = ($: EngineInterface, e: ResolveInput, what: string, error: HookFailure) => {
+  const { Box, Text } = $.ui.resolve(e)
+  return (
+    <Box flexDirection="column">
+      <Text dimColor>{`savvy-progress could not draw this ${what}: ${error.kind}: ${(error.message ?? '').slice(0, 300)}`}</Text>
+    </Box>
+  )
+}
 
 // skins' theme, while it names one, wins over colors.toml; a light one keeps the defaults,
 // as a light colors.toml does. skins' `dim` is the text tone this palette calls `muted`.
@@ -1384,6 +1395,10 @@ export const register: Register = (on, options) => {
           {running.map(a => (
             <Svg key={a.id} source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
           ))}
+          {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
+          {planned.map(pl => (
+            <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
+          ))}
           {bgActive.length > 0 && section('h-bg', `${s.background} · ${bgActive.length}`)}
           {bgActive.map(bgCard)}
           {hasEnded && toggleDone}
@@ -1392,10 +1407,6 @@ export const register: Register = (on, options) => {
               <Svg key={a.id} source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
             ))}
           {!p.isDoneCollapsed && bgEnded.map(bgCard)}
-          {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
-          {planned.map(pl => (
-            <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
-          ))}
         </Box>
       )
     }
@@ -1504,11 +1515,6 @@ export const register: Register = (on, options) => {
             {isEmpty && <Text dimColor>{s.empty}</Text>}
             {running.length > 0 && <Text dimColor>{s.running} · {running.length}</Text>}
             {running.map(row)}
-            {bgActive.length > 0 && <Text dimColor>{s.background} · {bgActive.length}</Text>}
-            {bgActive.map(bgRow)}
-            {hasEnded && toggleDone}
-            {!p.isDoneCollapsed && finished.map(row)}
-            {!p.isDoneCollapsed && bgEnded.map(bgRow)}
             {planned.length > 0 && <Text dimColor>{s.planned} · {planned.length}</Text>}
             {planned.map(pl => {
               const tier = pl.tier in TIER_COLOR ? pl.tier : 'other'
@@ -1525,11 +1531,16 @@ export const register: Register = (on, options) => {
                 </Box>
               )
             })}
+            {bgActive.length > 0 && <Text dimColor>{s.background} · {bgActive.length}</Text>}
+            {bgActive.map(bgRow)}
+            {hasEnded && toggleDone}
+            {!p.isDoneCollapsed && finished.map(row)}
+            {!p.isDoneCollapsed && bgEnded.map(bgRow)}
           </Box>
         )}
       </Box>
     )
-  })
+  }).catch(($, e, next) => (next.error.kind === 're-entry' ? next(e) : failedLine($, e, 'pane', next.error)))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     pal = await paletteOf($)
@@ -1618,6 +1629,17 @@ export const register: Register = (on, options) => {
           {crewButton}
           {dismiss}
         </Box>
+        {theirs}
+      </Box>
+    )
+  }).catch(async ($, e, next) => {
+    if (next.error.kind === 're-entry') return next(e)
+    // Whether or not the hook had called next, next(e) is the bands beneath: they stay under the failure line.
+    const theirs = await next(e).catch(() => null)
+    const { Box } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        {failedLine($, e, 'band', next.error)}
         {theirs}
       </Box>
     )
