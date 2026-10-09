@@ -167,3 +167,59 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 }
+
+test('a third failure with a new question in one call toasts both', async ($, on) => {
+  const toasts: string[] = []
+  setup(on, '', toasts)
+  await spawnW1($)
+  for (let i = 0; i < 2; i++) await stepW1($, { failed: true })
+  await stepW1($, { failed: true, blocked: 'Postgres or SQLite?' })
+  expect(toasts).toEqual(['agent pick db: needs input — Postgres or SQLite?', 'agent pick db: failed 3 times'])
+})
+
+type Drawn = { type: string; props?: { width?: number; gap?: number; label?: string }; children?: (Drawn | string)[] }
+// Cells a terminal row takes: fixed-width boxes by width, text by length, rows add their gaps.
+const cells = (n: Drawn | string): number => {
+  if (typeof n === 'string') return n.length
+  if (n.type === 'Button') return n.props?.label?.length ?? 0
+  if (n.props?.width) return n.props.width
+  const kids = (n.children ?? []).map(cells)
+  return kids.reduce((a, b) => a + b, 0) + (n.props?.gap ?? 0) * Math.max(0, kids.length - 1)
+}
+
+test('terminal: the chip and the gap beside it are fully reserved, so a flagged band row is no wider than an unflagged one', async ($, on) => {
+  setup(on)
+  await spawnW1($)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'ship it', total: 4, done: 1 } as never)
+  const rowAt = async (cols: number) => {
+    const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: cols, hasSurvey: false, maxRows: 5 } as never })
+    const [band] = await ui.findAll({})
+    const row = cells(band.children[0] as unknown as Drawn)
+    await ui.unmount()
+    return row
+  }
+  const plain = await rowAt(80)
+  await $.tool.call({ tool: STEP, done: 1, blocked: 'Postgres or SQLite?', agentId: 'w1' } as never)
+  expect(await rowAt(80)).toBeLessThanOrEqual(plain)
+})
+
+test('a second session.start does not stack a second clock ticker', async ($, on) => {
+  // Count clock.now reads: the ticker reads it once per second while a worker runs.
+  let ticks = 0
+  const clock = mock.clock(((event: string, handler: (...args: never[]) => unknown) =>
+    on(event as never, event === 'clock.now' ? ((...args: never[]) => (ticks++, handler(...args))) as never : (handler as never))) as typeof on)
+  mock.env(on, { HOME: '/home/k' })
+  on('fs.stat', () => { throw new Error('ENOENT') })
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('tool.register', () => ({ value: undefined }))
+  on('command.register', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
+  const start = () => $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
+  await start()
+  await start()
+  await spawnW1($)
+  ticks = 0
+  await clock.advance(3_000)
+  expect(ticks).toBe(3)
+})

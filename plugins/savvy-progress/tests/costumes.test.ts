@@ -20,6 +20,11 @@ test('costumes: roles from the type name or the task, the tier costume otherwise
     ['general-purpose', 'testing the parser', 'test'],
     ['general-purpose', 'designing the empty state', 'design'],
     ['general-purpose', 'implementing retries', 'implement'],
+    ['general-purpose', 'coding the parser', 'implement'],
+    ['general-purpose', 'wiring the hooks', 'implement'],
+    ['general-purpose', 'migrating the schema', 'implement'],
+    ['general-purpose', 'critiquing the patch', 'review'],
+    ['general-purpose', 'reproducing the crash', 'test'],
     // Whole words only: a hyphenated name or a longer word is not the role.
     ['claude-code-guide', 'answer a question', 'other'],
     ['output-style-setup', 'set the tone', 'other'],

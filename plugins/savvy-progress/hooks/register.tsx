@@ -38,6 +38,7 @@ type ProgressInput = {
 let pal: Palette | null = null
 let themePoll: { cancel(): void } | null = null
 let themeEvery = 0
+let clockTick: { cancel(): void } | null = null
 let themePath = ''
 const accentOf = (): string => pal?.accent ?? ACCENT
 
@@ -631,10 +632,10 @@ const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
 // Whole words with a common ending; a hyphen ends a match too, so `claude-code-guide` is no coder.
 const roleWords = (stems: string): RegExp => new RegExp(`\\b(?:${stems})(?:s|es|e?d|ing|e?rs?)?(?![\\w-])`, 'i')
 const ROLES: [costume: string, words: RegExp][] = [
-  ['review', roleWords('review|audit|grill|verif(?:y|i|ication)|critique|inspect')],
+  ['review', roleWords('review|audit|grill|verif(?:y|i|ication)|critiqu(?:e|ing)|inspect')],
   ['test', roleWords('test|qa|e2e|repro|reproduc(?:e|ing)')],
   ['design', roleWords('design|ui|ux|mockup|impeccable|visual|styl(?:e|ing)')],
-  ['implement', roleWords('implement|build|fix|add|refactor|code|develop|migrate|wire')],
+  ['implement', roleWords('implement|build|fix|add|refactor|cod(?:e|ing)|develop|migrat(?:e|ing)|wir(?:e|ing)')],
 ]
 const roleOf = (text: string): string | undefined => ROLES.find(([, words]) => words.test(text))?.[0]
 
@@ -902,7 +903,8 @@ export const register: Register = (on, options) => {
     })
 
     // Ticks the running agents' clocks; quiet when nothing runs.
-    $.clock.every(1000, () => {
+    clockTick?.cancel()
+    clockTick = $.clock.every(1000, () => {
       void (async () => {
         const list = await read($, agents)
         if (!list.some(a => a.status === 'running')) return
@@ -941,9 +943,10 @@ export const register: Register = (on, options) => {
     const agentId = e.agentId
     if (!agentId) return { result: 'ignored: only subagents report steps' }
     const s = tr()
-    let alert = ''
-    await update($, agents, list =>
-      list.map(a => {
+    const alerts: string[] = []
+    await update($, agents, list => {
+      alerts.length = 0
+      return list.map(a => {
         if (a.agentId !== agentId) return a
         const total = Math.max(0, Math.round(input.total ?? a.stepTotal ?? 0))
         const done = Math.max(0, Math.round(input.done ?? a.stepDone ?? 0))
@@ -960,16 +963,12 @@ export const register: Register = (on, options) => {
           blocked: (typeof input.blocked === 'string' && input.blocked.trim()) || undefined,
         }
         // Toast on crossings only: a new question, or the third failed attempt.
-        const failedCrossed = (a.failedAttempts ?? 0) < 3 && (run.failedAttempts ?? 0) >= 3
-        alert = run.blocked && run.blocked !== a.blocked
-          ? `${s.agent} ${run.description}: ${s.toastInput} — ${clip(run.blocked, 120)}`
-          : failedCrossed
-            ? `${s.agent} ${run.description}: ${s.toastFailed(run.failedAttempts ?? 0)}`
-            : ''
+        if (run.blocked && run.blocked !== a.blocked) alerts.push(`${s.agent} ${run.description}: ${s.toastInput} — ${clip(run.blocked, 120)}`)
+        if ((a.failedAttempts ?? 0) < 3 && (run.failedAttempts ?? 0) >= 3) alerts.push(`${s.agent} ${run.description}: ${s.toastFailed(run.failedAttempts ?? 0)}`)
         return run
-      }),
-    )
-    if (alert) $.ui.toast(alert)
+      })
+    })
+    for (const alert of alerts) $.ui.toast(alert)
     return { result: 'ok' }
   })
 
@@ -1346,8 +1345,8 @@ export const register: Register = (on, options) => {
 
     const cols = e.props.bodyColumns
     const titleW = Math.max(8, Math.min(30, f.title.length + 2, Math.floor(cols / 3)))
-    // The chip takes its text, its padding and a gap from the bar.
-    const width = Math.max(6, Math.min(40, cols - titleW - 32 - (flagged ? chipText.length + 3 : 0)))
+    // The chip takes its text, its two padding cells and the row's gap before it.
+    const width = Math.max(6, Math.min(40, cols - titleW - 32 - (flagged ? chipText.length + 4 : 0)))
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" gap={2}>
