@@ -76,6 +76,8 @@ If `~/.local/state/omarchy/current/theme/colors.toml` exists, the panel and the 
 
 A missing key keeps its default colour. A file with `mode = "light"` is ignored. On the desktop the text, track and tile colours apply only while the host is in dark mode; `accent` and the terminal colours apply whenever a theme is loaded. The file is checked every 2 seconds while it exists (read again only when it changes) and every 60 seconds while it is missing, so a theme installed later is picked up.
 
+While the skins mod has a skin on, its theme wins over the file, and a `/skin` switch redraws the panel and the band at once: its `dim` is the dim text, a light skin keeps the defaults, and with the skin off the file applies again. savvy-progress lists skins as a dependency, so it loads only with skins installed and enabled.
+
 ## Settings
 
 `language`: `auto` (default), `en` or `ru`. `auto` follows Claude Code's `language` setting, then the system locale, and falls back to English. Set it in `/config`, or, for a mod loaded by hand, in `~/.claude/settings.json`:

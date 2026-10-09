@@ -72,6 +72,16 @@ const THEME_FALLBACK: Record<keyof Palette, string[]> = {
 }
 let themeMtime = 0
 
+// skins' theme, while it names one, wins over colors.toml; a light one keeps the defaults,
+// as a light colors.toml does. skins' `dim` is the text tone this palette calls `muted`.
+async function paletteOf($: EngineInterface): Promise<Palette | null> {
+  const skin = await read($, { plugin: 'skins', key: 'theme' } as const)
+  if (!skin) return read($, theme)
+  if (skin.mode === 'light') return null
+  const { accent, foreground, dim, red, selection, background } = skin
+  return { accent, foreground, muted: dim, red, selection, background }
+}
+
 // Re-arms the poll only when its cadence changes.
 const pollTheme = ($: EngineInterface, ms: number): void => {
   if (ms === themeEvery) return
@@ -1300,7 +1310,7 @@ export const register: Register = (on, options) => {
     const s = tr()
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
-    pal = await read($, theme)
+    pal = await paletteOf($)
     const list = await read($, agents)
     const f = await read($, flow)
     const p: Panel = await read($, panel)
@@ -1522,7 +1532,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    pal = await read($, theme)
+    pal = await paletteOf($)
     const f = await read($, flow)
     const list = await read($, agents)
     const flagged = list.filter(needsAttention).length
