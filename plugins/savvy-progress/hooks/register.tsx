@@ -43,7 +43,7 @@ const STRINGS = {
     collapse: 'Collapse',
     expand: 'Expand',
     running: 'Running',
-    finished: 'Finished',
+    finished: 'Ended',
     planned: 'Planned',
     empty: 'No subagents yet.',
     round: 'round',
@@ -78,7 +78,7 @@ const STRINGS = {
     collapse: 'Свернуть',
     expand: 'Развернуть',
     running: 'Работают',
-    finished: 'Завершены',
+    finished: 'Закончили',
     planned: 'Запланированы',
     empty: 'Субагентов пока нет.',
     round: 'раунд',
@@ -248,8 +248,8 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
   }
 
   const text = label(f)
-  const pillW = Math.round(18 + text.length * 6.6)
-  const pillX = Math.max(0, Math.min(BAR_W - pillW, fillW - pillW))
+  const bandPillW = Math.round(18 + text.length * 6.6)
+  const pillX = Math.max(0, Math.min(BAR_W - bandPillW, fillW - bandPillW))
   const percent = `${Math.round(ratio(f) * 100)}%`
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
@@ -272,8 +272,8 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
 <g fill="${color}" opacity="0.45">${faint.join('')}</g>
 <g class="tk">${ticks.join('')}</g>
 </g>
-<rect x="${pillX}" width="${pillW}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${color}"/>
-<text x="${pillX + pillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${f.isFinished ? '#0f2a1c' : '#1f1e1d'}">${xml(text)}</text>
+<rect x="${pillX}" width="${bandPillW}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${color}"/>
+<text x="${pillX + bandPillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${f.isFinished ? '#0f2a1c' : '#1f1e1d'}">${xml(text)}</text>
 </g>
 <text class="m" x="${W - CRAB_W - 6}" y="${H / 2 + 4.5}" text-anchor="end" font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${percent}</text>
 ${CRAB_CSS}${crab(W - CRAB_W + 1, 0, 'other', false, isWorking, 0.8)}
