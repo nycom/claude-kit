@@ -148,7 +148,6 @@ const STRINGS = {
     toastFailed: (n: number) => `failed ${n} times`,
     chip: (n: number) => `⚠ ${n} ${n === 1 ? 'needs' : 'need'} attention`,
     background: 'Background',
-    stop: 'Stop',
     nextIn: (t: string) => `next in ${t}`,
     due: 'due',
     stopFailed: (what: string, err: string) => `could not stop ${clip(what, 60)}: ${err}`,
@@ -187,7 +186,6 @@ const STRINGS = {
     toastFailed: (n: number) => `неудач: ${n}`,
     chip: (n: number) => `⚠ ${n} ${n === 1 ? 'требует' : 'требуют'} внимания`,
     background: 'Фоновые',
-    stop: 'Стоп',
     nextIn: (t: string) => `через ${t}`,
     due: 'пора',
     stopFailed: (what: string, err: string) => `не удалось остановить ${clip(what, 60)}: ${err}`,
@@ -1332,7 +1330,7 @@ export const register: Register = (on, options) => {
     )
     const isEmpty = list.length === 0 && planned.length === 0 && bg.length === 0
     const hasEnded = finished.length + bgEnded.length > 0
-    const stopButton = (x: BackgroundTask) => <Button key={`stop-${x.id}`} label={s.stop} plain onPress={() => stopTask($, x)} />
+    const stopButton = (x: BackgroundTask) => <Button key={`stop-${x.id}`} label="■" plain dimColor hover={{ color: pal?.red ?? RED }} onPress={() => stopTask($, x)} />
     const flagged = list.filter(needsAttention)
     const summary = `≈${fmtCost(t.cost)}, ${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
 

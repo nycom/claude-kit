@@ -113,7 +113,7 @@ test('Stop: TaskStop for a shell, CronDelete for a cron, ScheduleWakeup stop for
   await $.tool.call({ tool: 'ScheduleWakeup', delaySeconds: 720, reason: 'wait for CI', prompt: '/loop check CI' } as never)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.findAll({ type: 'Button', text: 'Stop' })).length).toBe(3)
+    expect((await ui.findAll({ type: 'Button', text: '■' })).length).toBe(3)
     await ui.unmount()
   }
 
@@ -332,5 +332,14 @@ test('the compact toggle is an icon button, not a word', async ($, on) => {
   setup(on)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.findAll({ type: 'Button', text: '⊟' })).length).toBe(1)
+  await ui.unmount()
+})
+
+test('the stop button is a dim square icon that turns red on hover', async ($, on) => {
+  setup(on)
+  await bash($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // `hover` is a sibling of `props` in the drawn tree, which findAll does not show.
+  expect(JSON.stringify(await ui.drawn())).toMatch(/"label":"■","plain":true,"dimColor":true\},"press":\{[^}]*\},"hover":\{"color":"#b3261e"\}/)
   await ui.unmount()
 })
