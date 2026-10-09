@@ -152,6 +152,7 @@ const STRINGS = {
     background: 'Background',
     stop: 'Stop',
     nextIn: (t: string) => `next in ${t}`,
+    due: 'due',
     stopFailed: (what: string, err: string) => `could not stop ${clip(what, 60)}: ${err}`,
     kinds: { shell: 'shell', monitor: 'monitor', cron: 'scheduled', wakeup: 'loop wakeup' },
   },
@@ -192,6 +193,7 @@ const STRINGS = {
     background: 'Фоновые',
     stop: 'Стоп',
     nextIn: (t: string) => `через ${t}`,
+    due: 'пора',
     stopFailed: (what: string, err: string) => `не удалось остановить ${clip(what, 60)}: ${err}`,
     kinds: { shell: 'команда', monitor: 'монитор', cron: 'по расписанию', wakeup: 'пробуждение цикла' },
   },
@@ -836,7 +838,7 @@ const bgTitle = (t: BackgroundTask): string => t.text || tr().kinds[t.kind]
 const bgMeta = (t: BackgroundTask, at: number): string => {
   const s = tr()
   if (t.status !== 'scheduled') return `${s.kinds[t.kind]} · ${fmtTime(elapsed(t, at))}`
-  return `${s.kinds[t.kind]} · ${t.nextAt ? s.nextIn(fmtIn(t.nextAt - at)) : (t.schedule ?? '')}`
+  return `${s.kinds[t.kind]} · ${t.nextAt ? (t.nextAt > at ? s.nextIn(fmtIn(t.nextAt - at)) : s.due) : (t.schedule ?? '')}`
 }
 
 const bgMark = (t: BackgroundTask): string => (t.status === 'scheduled' ? 'planned' : t.status)
@@ -859,8 +861,16 @@ ${statusMark(W - 8, 16, bgMark(t), accentOf())}
 
 // The clock ticks every second while an agent or a background task runs, every minute
 // while only scheduled rows wait (their countdowns are in minutes), not at all otherwise.
-// One timer: a change of pace cancels it before arming the next.
-async function retick($: EngineInterface): Promise<void> {
+// One timer: a change of pace cancels it before arming the next. The calls run one at a
+// time, so a call that read the state before a change cannot undo the one made after it.
+let reticking: Promise<void> = Promise.resolve()
+function retick($: EngineInterface): Promise<void> {
+  const run = reticking.then(() => repace($))
+  reticking = run.catch(() => undefined)
+  return run
+}
+
+async function repace($: EngineInterface): Promise<void> {
   const isRunning = (await read($, agents)).some(a => a.status === 'running')
   const bg = await read($, background)
   const ms = isRunning || bg.some(t => t.status === 'running') ? 1000 : bg.some(isActive) ? 60_000 : 0
@@ -900,6 +910,13 @@ const isFinal = (status: string | undefined): status is string => !!status && !/
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 // A command or description on one line.
 const oneLine = (v: unknown): string => str(v).replace(/\s+/g, ' ').trim()
+
+// The engine clips a cron's prompt to 1000 chars and appends "… [+N chars]": true when
+// `listed` is `prompt`, whole or clipped.
+const isClipOf = (listed: string, prompt: string): boolean => {
+  const kept = listed.replace(/\s*…\s*\[\+\d+ chars\]$/, '')
+  return kept === listed ? listed === prompt : prompt.startsWith(kept)
+}
 
 // What a call started in the background, from its input and its result; null when nothing.
 const startedTask = (e: Record<string, unknown>, r: Record<string, unknown>): Omit<BackgroundTask, 'startedAt'> | null => {
@@ -1144,19 +1161,23 @@ export const register: Register = (on, options) => {
     const crons = e.session_crons
     if (!e.background_tasks || !crons) return result
     const live = e.background_tasks.filter(t => t.type === 'shell' || t.type === 'monitor')
-    const ids = new Set([...live.map(t => t.id), ...crons.flatMap(c => [c.id, `wake:${c.prompt}`])])
+    const ids = new Set([...live.map(t => t.id), ...crons.map(c => c.id)])
+    // A wakeup's row is keyed by its prompt, which the engine may have clipped.
+    const isWakeOf = (id: string) => crons.some(c => isClipOf(c.prompt, id.slice('wake:'.length)))
     const reconcile = async (at: number) =>
       setBackground($, list => {
         const known = new Set(list.map(t => t.id))
+        const wakes = list.filter(t => t.kind === 'wakeup').map(t => t.id.slice('wake:'.length))
         const missed: BackgroundTask[] = [
           ...live
             .filter(t => !known.has(t.id))
             .map(t => ({ id: t.id, kind: t.type as 'shell' | 'monitor', text: oneLine(t.command) || oneLine(t.description), status: 'running' as const, startedAt: at })),
           ...crons
-            .filter(c => !known.has(c.id) && !known.has(`wake:${c.prompt}`))
+            .filter(c => !known.has(c.id) && !wakes.some(p => isClipOf(c.prompt, p)))
             .map(c => ({ id: c.id, kind: 'cron' as const, text: oneLine(c.prompt), status: 'scheduled' as const, startedAt: at, schedule: c.schedule })),
         ]
-        return [...list.map(t => (isActive(t) && !ids.has(t.id) ? { ...t, status: 'done' as const, endedAt: at } : t)), ...missed]
+        const isLive = (t: BackgroundTask) => ids.has(t.id) || (t.kind === 'wakeup' && isWakeOf(t.id))
+        return [...list.map(t => (isActive(t) && !isLive(t) ? { ...t, status: 'done' as const, endedAt: at } : t)), ...missed]
       })
     // Bookkeeping after the hooks have run: a failure here must not fail the stop.
     await $.clock.now().then(reconcile).catch(() => undefined)

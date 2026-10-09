@@ -27,6 +27,17 @@ const setup = (on: OnT, toasts: string[] = [], opens: string[] = [], calls: Reco
   return clock
 }
 
+// Counts clock.now reads: each tick reads it once.
+const countTicks = (on: OnT) => {
+  const ticks = { n: 0, on }
+  ticks.on = ((event: string, ...rest: ((...args: never[]) => unknown)[]) => {
+    const handler = rest.pop() as (...args: never[]) => unknown
+    const counted = event === 'clock.now' ? (...args: never[]) => (ticks.n++, handler(...args)) : handler
+    return (on as (...args: unknown[]) => void)(event, ...rest, counted)
+  }) as OnT
+  return ticks
+}
+
 const bash = ($: $T) => $.tool.call({ tool: 'Bash', command: 'npm run dev -- --port 5173', run_in_background: true } as never)
 const notify = ($: $T, id: string, status: string) =>
   $.prompt.submit({
@@ -200,9 +211,11 @@ test('a multi-line command shows on one line, started or reconciled', async ($, 
   expect(text).toContain('npm test --watch')
 })
 
-test('a session start, resume or clear empties the background list', async ($, on) => {
+test('a session start, resume or clear empties the background list; a compaction keeps it', async ($, on) => {
   setup(on)
   await bash($)
+  expect(await shown($)).toContain('Background · 1')
+  await $.classic.SessionStart({ source: 'compact' })
   expect(await shown($)).toContain('Background · 1')
   await $.classic.SessionStart({ source: 'resume' })
   const text = await shown($)
@@ -211,14 +224,8 @@ test('a session start, resume or clear empties the background list', async ($, o
 })
 
 test('the clock ticks once a minute while only scheduled rows wait, every second while a task runs', async ($, on) => {
-  // Count clock.now reads: each tick reads it once.
-  let ticks = 0
-  const counting = ((event: string, ...rest: ((...args: never[]) => unknown)[]) => {
-    const handler = rest.pop() as (...args: never[]) => unknown
-    const counted = event === 'clock.now' ? (...args: never[]) => (ticks++, handler(...args)) : handler
-    return (on as (...args: unknown[]) => void)(event, ...rest, counted)
-  }) as typeof on
-  const clock = setup(counting)
+  const ticks = countTicks(on)
+  const clock = setup(ticks.on)
   mock.env(on, { HOME: '/home/k' })
   on('fs.stat', () => { throw new Error('ENOENT') })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -226,18 +233,97 @@ test('the clock ticks once a minute while only scheduled rows wait, every second
   on('command.register', () => ({ value: undefined }) as never)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
   await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
-  ticks = 0
+  ticks.n = 0
   await clock.advance(120_000)
-  expect(ticks).toBeLessThanOrEqual(2)
-  expect(ticks).toBeGreaterThan(0)
+  expect(ticks.n).toBeLessThanOrEqual(2)
+  expect(ticks.n).toBeGreaterThan(0)
 
   await bash($)
-  ticks = 0
+  ticks.n = 0
   await clock.advance(3_000)
-  expect(ticks).toBe(3)
+  expect(ticks.n).toBe(3)
 
   await notify($, 'b1', 'completed')
-  ticks = 0
+  ticks.n = 0
   await clock.advance(120_000)
-  expect(ticks).toBeLessThanOrEqual(3)
+  expect(ticks.n).toBeLessThanOrEqual(3)
+})
+
+test('a tick that read the state before a task started does not slow the clock it armed', async ($, on) => {
+  const ticks = countTicks(on)
+  const clock = setup(ticks.on)
+  // Holds the tick's read of the background list until the shell has started.
+  let gate: Promise<void> | null = null
+  let release = () => {}
+  let isTick = false
+  on('state.get', async (_$, e, next) => {
+    const key = (e as { key?: string }).key
+    const value = await next(e)
+    if (key === 'now') isTick = true
+    if (gate && isTick && key === 'background') {
+      const held = gate
+      gate = null
+      await held
+    }
+    return value
+  })
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  gate = new Promise(r => (release = r))
+  await clock.advance(60_000)
+  const started = bash($)
+  for (let i = 0; i < 500; i++) await Promise.resolve()
+  release()
+  await started
+  for (let i = 0; i < 500; i++) await Promise.resolve()
+  ticks.n = 0
+  await clock.advance(3_000)
+  expect(ticks.n).toBe(3)
+})
+
+test('a wakeup whose prompt the engine clipped to 1000 chars still matches its row at each stop', async ($, on) => {
+  setup(on)
+  const prompt = `/loop ${'check CI '.repeat(133)}`.slice(0, 1200)
+  await $.tool.call({ tool: 'ScheduleWakeup', delaySeconds: 720, reason: 'wait for CI', prompt } as never)
+  const stop = () =>
+    $.classic.Stop({
+      stop_hook_active: false,
+      background_tasks: [],
+      session_crons: [{ id: 'w1', schedule: '14 12 9 10 *', recurring: false, prompt: `${prompt.slice(0, 1000)} …[+200 chars]` }],
+    })
+  await stop()
+  await stop()
+  const text = await shown($)
+  expect(text).toContain('Background · 1')
+  expect(text).toContain('wait for CI')
+  expect(text).not.toContain('Ended')
+})
+
+test('a past-due wakeup reads "due", not "next in 0m"', async ($, on) => {
+  const clock = setup(on)
+  await $.tool.call({ tool: 'ScheduleWakeup', delaySeconds: 720, reason: 'wait for CI', prompt: '/loop check CI' } as never)
+  await clock.advance(721_000)
+  const text = await shown($)
+  expect(text).toContain('due')
+  expect(text).not.toContain('next in')
+})
+
+test('a cron prompt, a monitor description and a wakeup reason show on one line, started or reconciled', async ($, on) => {
+  setup(on)
+  await $.tool.call({ tool: 'Monitor', description: 'watch\n  the deploy log', timeout_ms: 300000, command: 'tail -f deploy.log' } as never)
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check\n\tthe deploy' } as never)
+  await $.tool.call({ tool: 'ScheduleWakeup', delaySeconds: 720, reason: 'wait\n for CI', prompt: '/loop check CI' } as never)
+  await $.classic.Stop({
+    stop_hook_active: false,
+    background_tasks: [
+      { id: 'm1', type: 'monitor', status: 'running', description: 'watch', command: 'tail -f deploy.log' },
+      { id: 'm2', type: 'monitor', status: 'running', description: 'tail\n the queue' },
+    ],
+    session_crons: [
+      { id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check the deploy' },
+      { id: 'w1', schedule: '14 12 9 10 *', recurring: false, prompt: '/loop check CI' },
+      { id: 'c7', schedule: '*/5 * * * *', recurring: true, prompt: 'poll\n  the queue' },
+    ],
+  })
+  const text = await shown($)
+  for (const line of ['watch the deploy log', 'check the deploy', 'wait for CI', 'tail the queue', 'poll the queue']) expect(text).toContain(line)
 })

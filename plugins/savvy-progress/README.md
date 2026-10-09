@@ -38,13 +38,13 @@ The panel also lists background work that is not a subagent, under **Background 
 
 - **Shells**: a Bash command run in the background (`run_in_background`, or sent there with Ctrl+B), with its command and running time.
 - **Monitors**: the Monitor tool, with its description and running time.
-- **Scheduled**: CronCreate jobs (a `/loop` on an interval included), with the prompt and the schedule, "every 5 minutes"; and ScheduleWakeup (a dynamic `/loop`), with the reason and a countdown, "next in 12m".
+- **Scheduled**: CronCreate jobs (a `/loop` on an interval included), with the prompt and the schedule, "every 5 minutes"; and ScheduleWakeup (a dynamic `/loop`), with the reason and a countdown, "next in 12m", or "due" once its time has passed.
 
 Workflows and subagents are not listed here; their agents are already crabs. A background task never opens the panel by itself.
 
-Each row has a **Stop** button; one press stops it, with no confirmation: TaskStop for a shell or a monitor, CronDelete for a cron job, ScheduleWakeup's `stop` for a dynamic `/loop`. If the call fails, the error is toasted and the row stays. Stop goes through Claude Code's normal permission check, so in some permission modes it may ask first or be refused.
+Each running or scheduled row has a **Stop** button (ended rows don't); one press stops it, with no confirmation: TaskStop for a shell or a monitor, CronDelete for a cron job, ScheduleWakeup's `stop` for a dynamic `/loop`. If the call fails, the error is toasted and the row stays. Stop goes through Claude Code's normal permission check, so in some permission modes it may ask first or be refused.
 
-A task's completion notification moves it to **Ended** with its duration; a failed one gets a red **failed** label there (history only: no attention chip). When Claude stops, the panel matches its rows against the session's in-flight tasks and crons: it adds what it missed and ends what is gone. A new, resumed or cleared session starts with an empty list, refilled at the next stop.
+A task's completion notification moves it to **Ended** with its duration; a failed one gets a red **failed** label there (history only: no attention chip). When Claude stops, the panel matches its rows against the session's in-flight tasks and crons: it adds what it missed and ends what is gone. A row it adds counts its time from that stop, crons show the raw cron expression, and a monitor takes the type the engine lists it under, currently shell. A new, resumed or cleared session starts with an empty list, refilled at the next stop; a compaction keeps the list.
 
 ## Crab costumes
 
