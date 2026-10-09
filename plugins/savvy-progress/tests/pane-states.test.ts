@@ -155,8 +155,23 @@ test("terminal: a running agent's mark turns one quadrant a second with the cloc
   expect(await mark()).toBe(SPIN[(SPIN.indexOf(first) + 1) % 4])
 })
 
+test("terminal: with only a background shell running, its mark still turns a quadrant on each minute's tick", async ($, on) => {
+  const clock = setup(on)
+  await bash($, 'npm run dev')
+  const SPIN = '◴◷◶◵'
+  const mark = async () => (await leaves($, 'terminal')).map(n => n.text ?? '').find(t => t.length === 1 && SPIN.includes(t)) ?? ''
+  const first = await mark()
+  expect(first).not.toBe('')
+  await clock.advance(60_000)
+  expect(await mark()).toBe(SPIN[(SPIN.indexOf(first) + 1) % 4])
+  await clock.advance(60_000)
+  expect(await mark()).toBe(SPIN[(SPIN.indexOf(first) + 2) % 4])
+})
+
 // Each redraw is a new image that starts its animations over: the delay carries the turn on from the wall clock.
-test('desktop: a redraw a second later carries each platter on by a second, background rows too; reduced motion still holds it', async ($, on) => {
+// A background row reads whole minutes, so within a minute only its phase would change: it keeps
+// its image and the loop runs on untouched; once its reading changes, the new image carries the turn on.
+test('desktop: a redraw a second later carries the agent platter on by a second, a background row once its minute turns; reduced motion still holds it', async ($, on) => {
   const clock = setup(on)
   await spawn($, 'fix tests')
   await bash($, 'npm run dev')
@@ -168,8 +183,12 @@ test('desktop: a redraw a second later carries each platter on by a second, back
   const before = await draw()
   await clock.advance(1_000)
   const after = await draw()
+  const carried = (later: number[]) => later.map((d, k) => Math.round((((d - (before[k] ?? 0)) % 1.8) + 1.8) % 1.8 * 1000))
   expect(before.length).toBe(2)
-  expect(after.map((d, k) => Math.round((((d - (before[k] ?? 0)) % 1.8) + 1.8) % 1.8 * 1000))).toEqual([1000, 1000])
+  expect(carried(after)).toEqual([1000, 0])
+  await clock.advance(59_000)
+  // A minute on: 60 s is 33 turns of 1.8 s and 0.6 s more.
+  expect(carried(await draw())).toEqual([600, 600])
 })
 
 // A planned task starts when an agent's description is its title or begins with it as a whole word.

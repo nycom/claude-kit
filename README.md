@@ -21,6 +21,13 @@ In Claude Code:
 /plugin install savvy-progress@claude-kit
 ```
 
+All four of Nati's mods (savvy-progress plus the forked skins, filetree and cache-tax):
+
+```
+/plugin marketplace add nycom/claude-kit
+/plugin install savvy-progress@claude-kit skins@claude-kit filetree@claude-kit cache-tax@claude-kit
+```
+
 Restart the session afterwards. Plugin skills and agents are namespaced: the skill is `/savvy-flow:savvy-flow`, the agents `savvy-flow:savvy-careful` and so on.
 
 ### By hand

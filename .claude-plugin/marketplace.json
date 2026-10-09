@@ -14,7 +14,33 @@
       "name": "savvy-progress",
       "source": "./plugins/savvy-progress",
       "description": "Mod: progress bar above the prompt and a live agents panel; made for savvy-flow, shows any subagents.",
-      "version": "1.3.0",
+      "category": "mod"
+    },
+    {
+      "name": "skins",
+      "source": {
+        "source": "github",
+        "repo": "nycom/claude-skins"
+      },
+      "description": "Mod: skins for the transcript: themed tool rows, reply gutters and spinner words; /skin swaps them live.",
+      "category": "mod"
+    },
+    {
+      "name": "filetree",
+      "source": {
+        "source": "github",
+        "repo": "nycom/claude-code-filetree"
+      },
+      "description": "Mod: IDE-style file tree that shows what Claude is doing and where in files.",
+      "category": "mod"
+    },
+    {
+      "name": "cache-tax",
+      "source": {
+        "source": "github",
+        "repo": "nycom/cache-tax"
+      },
+      "description": "Mod: keeps the one-hour prompt cache warm during breaks and warns once before a cold send.",
       "category": "mod"
     }
   ]

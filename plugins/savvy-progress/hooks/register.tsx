@@ -921,10 +921,14 @@ const BG_ICON: Record<BackgroundTask['kind'], string> = { shell: '$', monitor: '
 
 const bgTitle = (t: BackgroundTask): string => t.text || tr().kinds[t.kind]
 
-// What runs shows its time so far, what waits its countdown, what ended its duration.
+// What runs shows its time so far in whole minutes, "<1m" in the first (the clock may tick
+// only once a minute, so a seconds reading would freeze), what waits its countdown, what
+// ended its duration.
 const bgMeta = (t: BackgroundTask, at: number): string => {
   const s = tr()
-  if (t.status !== 'scheduled') return `${s.kinds[t.kind]} · ${fmtTime(elapsed(t, at))}`
+  const ms = elapsed(t, at)
+  if (t.status === 'running') return `${s.kinds[t.kind]} · ${ms < 60_000 ? '<1m' : fmtIn(Math.floor(ms / 60_000) * 60_000)}`
+  if (t.status !== 'scheduled') return `${s.kinds[t.kind]} · ${fmtTime(ms)}`
   return `${s.kinds[t.kind]} · ${t.nextAt ? (t.nextAt > at ? s.nextIn(fmtIn(t.nextAt - at)) : s.due) : (t.schedule ?? '')}`
 }
 
@@ -949,10 +953,11 @@ ${statusMark(W - 8, BG_H / 2, bgMark(t), accentOf(), 0, drawnAt)}
   )
 }
 
-// The clock ticks every second while an agent or a background task runs, every minute
-// while only scheduled rows wait (their countdowns are in minutes), not at all otherwise.
-// One timer: a change of pace cancels it before arming the next. The calls run one at a
-// time, so a call that read the state before a change cannot undo the one made after it.
+// The clock ticks every second while an agent runs, every minute while only background
+// rows show a time (a cron shows its schedule), not at all otherwise. One timer: each
+// change of pace calls retick where it happens, which cancels it before arming the next.
+// The calls run one at a time, so a call that read the state before a change cannot undo
+// the one made after it.
 let reticking: Promise<void> = Promise.resolve()
 function retick($: EngineInterface): Promise<void> {
   const run = reticking.then(() => repace($))
@@ -963,19 +968,11 @@ function retick($: EngineInterface): Promise<void> {
 async function repace($: EngineInterface): Promise<void> {
   const isRunning = (await read($, agents)).some(a => a.status === 'running')
   const bg = await read($, background)
-  const ms = isRunning || bg.some(t => t.status === 'running') ? 1000 : bg.some(isActive) ? 60_000 : 0
+  const ms = isRunning ? 1000 : bg.some(t => isActive(t) && t.kind !== 'cron') ? 60_000 : 0
   if (ms === tickMs) return
   clockTick?.cancel()
   tickMs = ms
-  clockTick = ms
-    ? $.clock.every(ms, () => {
-        void (async () => {
-          const at = await $.clock.now()
-          await update($, now, () => at)
-          await retick($)
-        })()
-      })
-    : null
+  clockTick = ms ? $.clock.every(ms, () => void $.clock.now().then(at => update($, now, () => at))) : null
 }
 
 // Writes the list only when it changed: every write redraws the pane.
@@ -1016,7 +1013,7 @@ const startedTask = (e: Record<string, unknown>, r: Record<string, unknown>): Om
     return { id: str(r.id), kind: 'cron', text: oneLine(e.prompt), status: 'scheduled', schedule: str(r.humanSchedule) || str(e.cron) }
   // scheduledFor 0: the wakeup could not be armed.
   if (e.tool === 'ScheduleWakeup' && typeof r.scheduledFor === 'number' && r.scheduledFor > 0 && !r.stopped)
-    return { id: `wake:${str(e.prompt)}`, kind: 'wakeup', text: oneLine(e.reason) || oneLine(e.prompt), status: 'scheduled', nextAt: r.scheduledFor }
+    return { id: `wake:${oneLine(e.prompt)}`, kind: 'wakeup', text: oneLine(e.reason) || oneLine(e.prompt), status: 'scheduled', nextAt: r.scheduledFor }
   return null
 }
 
@@ -1043,9 +1040,10 @@ const ctxBar = (pct: number, width: number): string => {
 }
 
 const STATUS_GLYPH: Record<string, string> = { done: '✓', failed: '✗', planned: '◷' }
-// A running mark turns clockwise a quadrant a second, on the clock's tick; the i-th row runs i quadrants ahead.
+// A running mark turns clockwise a quadrant on each of the clock's ticks, a second or a minute
+// apart; the i-th row runs i quadrants ahead.
 const glyphOf = (status: string, at: number, i = 0): string =>
-  status === 'running' ? '◴◷◶◵'.charAt((Math.floor(at / 1000) + i) % 4) : STATUS_GLYPH[status]
+  status === 'running' ? '◴◷◶◵'.charAt((Math.floor(at / (tickMs || 1000)) + i) % 4) : STATUS_GLYPH[status]
 
 // Opens the agents pane, or closes it when it is up; true when it ends up open.
 async function togglePane($: EngineInterface): Promise<boolean> {
@@ -1256,7 +1254,7 @@ export const register: Register = (on, options) => {
     const live = e.background_tasks.filter(t => t.type === 'shell' || t.type === 'monitor')
     const ids = new Set([...live.map(t => t.id), ...crons.map(c => c.id)])
     // A wakeup's row is keyed by its prompt, which the engine may have clipped.
-    const isWakeOf = (id: string) => crons.some(c => isClipOf(c.prompt, id.slice('wake:'.length)))
+    const isWakeOf = (id: string) => crons.some(c => isClipOf(oneLine(c.prompt), id.slice('wake:'.length)))
     const reconcile = async (at: number) =>
       setBackground($, list => {
         const known = new Set(list.map(t => t.id))
@@ -1266,7 +1264,7 @@ export const register: Register = (on, options) => {
             .filter(t => !known.has(t.id))
             .map(t => ({ id: t.id, kind: t.type as 'shell' | 'monitor', text: oneLine(t.command) || oneLine(t.description), status: 'running' as const, startedAt: at })),
           ...crons
-            .filter(c => !known.has(c.id) && !wakes.some(p => isClipOf(c.prompt, p)))
+            .filter(c => !known.has(c.id) && !wakes.some(p => isClipOf(oneLine(c.prompt), p)))
             .map(c => ({ id: c.id, kind: 'cron' as const, text: oneLine(c.prompt), status: 'scheduled' as const, startedAt: at, schedule: c.schedule })),
         ]
         const isLive = (t: BackgroundTask) => ids.has(t.id) || (t.kind === 'wakeup' && isWakeOf(t.id))
@@ -1383,6 +1381,7 @@ export const register: Register = (on, options) => {
       if (wasRunning && !after.some(a => a.status === 'running')) await update($, panel, prev => ({ ...prev, isDoneCollapsed: true }))
       if (wasRunning) await update($, flow, f => autoFlow(f, after, after.find(a => a.agentId === agentId)))
       await update($, now, () => at)
+      await retick($)
     }
     return next(e)
   })

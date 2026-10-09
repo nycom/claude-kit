@@ -46,7 +46,7 @@ export type AgentRun = {
 
 /** Background work that is not a subagent: shells and monitors run, crons and wakeups wait. */
 export type BackgroundTask = {
-  /** The task id (TaskStop's), the cron id (CronDelete's), or `wake:<prompt>` for a ScheduleWakeup. */
+  /** The task id (TaskStop's), the cron id (CronDelete's), or for a ScheduleWakeup `wake:` and its prompt on one line (whitespace collapsed), which the Stop reconcile matches. */
   id: string
   kind: 'shell' | 'monitor' | 'cron' | 'wakeup'
   /** The command, or the description, prompt or reason. */
