@@ -838,12 +838,12 @@ const BG_ICON: Record<BackgroundTask['kind'], string> = { shell: '$', monitor: '
 
 const bgTitle = (t: BackgroundTask): string => t.text || tr().kinds[t.kind]
 
-// What runs shows its time so far, in whole minutes past the first (the clock ticks once a
-// minute then), what waits its countdown, what ended its duration.
+// What runs shows its time so far in whole minutes, 0m first (the clock may tick only once a
+// minute, so a seconds reading would freeze), what waits its countdown, what ended its duration.
 const bgMeta = (t: BackgroundTask, at: number): string => {
   const s = tr()
   const ms = elapsed(t, at)
-  if (t.status === 'running' && ms >= 60_000) return `${s.kinds[t.kind]} · ${fmtIn(ms - (ms % 60_000))}`
+  if (t.status === 'running') return `${s.kinds[t.kind]} · ${fmtIn(ms - (ms % 60_000))}`
   if (t.status !== 'scheduled') return `${s.kinds[t.kind]} · ${fmtTime(ms)}`
   return `${s.kinds[t.kind]} · ${t.nextAt ? (t.nextAt > at ? s.nextIn(fmtIn(t.nextAt - at)) : s.due) : (t.schedule ?? '')}`
 }

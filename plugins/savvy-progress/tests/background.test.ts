@@ -264,6 +264,15 @@ test('a running shell shows its elapsed time in minutes once past a minute', asy
   expect(text).not.toContain('shell · 2:')
 })
 
+test('a shell in its first minute shows 0m, not a seconds reading the minute clock would freeze', async ($, on) => {
+  const clock = setup(on)
+  await bash($)
+  await clock.advance(30_000)
+  const text = await shown($)
+  expect(text).toContain('shell · 0m')
+  expect(text).not.toContain('shell · 0:')
+})
+
 test('a wakeup whose prompt the engine clipped to 1000 chars still matches its row at each stop', async ($, on) => {
   setup(on)
   const prompt = `/loop ${'check CI '.repeat(133)}`.slice(0, 1200)
