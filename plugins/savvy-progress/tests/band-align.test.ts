@@ -49,13 +49,13 @@ test('desktop band: dot, bar, pill, crab and the attention chip share one centre
   expect(barY + barH / 2).toBe(mid)
   expect(barY + pillH / 2).toBe(mid)
 
-  // The crab: its drawn rects' extent, scaled and offset, centres on the line.
+  // The crab: its drawn pixels' extent, scaled and offset, centres on the line.
   const crab = /<g transform="translate\(([\d.]+),([\d.-]+)\) scale\(([\d.]+)\)"[^>]*>([\s\S]*?)<\/g><\/g>\s*<\/svg>/.exec(crabImg.props.source)
   if (!crab) throw new Error('crab missing')
   const [, , y, scale, body] = crab
   let top = Infinity
   let bottom = -Infinity
-  for (const r of body.matchAll(/<rect x="[\d.]+" y="([\d.]+)" width="[\d.]+" height="([\d.]+)"/g)) {
+  for (const r of body.matchAll(/M\d+ (\d+)h\d+v(\d+)/g)) {
     top = Math.min(top, Number(r[1]))
     bottom = Math.max(bottom, Number(r[1]) + Number(r[2]))
   }

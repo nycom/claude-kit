@@ -724,7 +724,7 @@ const crabCss = (walking: string[]): string => {
   return `<style>${rules}${frames.map(n => `@keyframes ${n}{${CRAB_KEYFRAMES[n]}}`).join('')}@media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}</style>`
 }
 
-const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
+export const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
   // Fable: astronaut in a glass dome; floats instead of walking, the antenna and the star blink.
   fable: (f, t) => {
     crabBody(f)
@@ -819,19 +819,48 @@ const costumeOf = (a: { type: string; description?: string }): string =>
 
 const CRAB_SCALE = 1.1
 
+// A group's pixels of one colour are one path, painted in the order each colour first appears:
+// a row's run of pixels is a rectangle, grown down while the next row repeats it.
+const pixelPath = (rows: Map<number, Set<number>>): string => {
+  const rects: [x: number, y: number, w: number, h: number][] = []
+  let open = new Map<string, (typeof rects)[number]>()
+  for (const y of [...rows.keys()].sort((a, b) => a - b)) {
+    const xs = [...(rows.get(y) ?? [])].sort((a, b) => a - b)
+    const next = new Map<string, (typeof rects)[number]>()
+    for (let i = 0, j = 0; i < xs.length; i = ++j) {
+      while (xs[j + 1] === (xs[j] ?? 0) + 1) j++
+      const x = xs[i] ?? 0
+      const w = j - i + 1
+      const key = `${x},${w}`
+      const r = open.get(key)
+      if (r && r[1] + r[3] === y) {
+        r[3]++
+        open.delete(key)
+        next.set(key, r)
+      } else next.set(key, [x, y, w, 1])
+    }
+    rects.push(...open.values())
+    open = next
+  }
+  rects.push(...open.values())
+  return rects.map(([x, y, w, h]) => `M${x} ${y}h${w}v${h}h-${w}z`).join('')
+}
+
 // Body and props nest inside `bd` so a prop rides the bob and adds its own motion;
 // legs stay outside it and step on their own.
-const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = CRAB_SCALE, tint = colorOf(costume)): string => {
-  const groups = new Map<string, string[]>([['bd', []]])
+export const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = CRAB_SCALE, tint = colorOf(costume)): string => {
+  const groups = new Map<string, Map<string, Map<number, Set<number>>>>([['bd', new Map()]])
+  const at = <K, V>(m: Map<K, V>, k: K, make: () => V): V => m.get(k) ?? (m.set(k, make()), m.get(k) as V)
   const f: Fill = (cx, cy, w, h, c, cls = 'bd') => {
-    if (!groups.has(cls)) groups.set(cls, [])
-    groups.get(cls)?.push(`<rect x="${cx}" y="${cy}" width="${w}" height="${h}" fill="${c}"/>`)
+    const rows = at(at(groups, cls, () => new Map()), c, () => new Map())
+    for (let py = cy; py < cy + h; py++) for (let px = cx; px < cx + w; px++) at(rows, py, () => new Set()).add(px)
   }
   const draw = COSTUMES[costume] ?? ((g: Fill) => crabBody(g))
   draw(f, tint)
-  const group = (cls: string) => `<g class="${cls}">${(groups.get(cls) ?? []).join('')}</g>`
+  const paths = (cls: string) => [...(groups.get(cls) ?? [])].map(([c, rows]) => `<path d="${pixelPath(rows)}" fill="${c}"/>`).join('')
+  const group = (cls: string) => `<g class="${cls}">${paths(cls)}</g>`
   const props = [...groups.keys()].filter(k => k !== 'bd' && k !== 'la' && k !== 'lb')
-  const body = `<g class="bd">${(groups.get('bd') ?? []).join('')}${props.map(group).join('')}</g>`
+  const body = `<g class="bd">${paths('bd')}${props.map(group).join('')}</g>`
   return `<g transform="translate(${x},${y}) scale(${scale})" opacity="${dim ? 0.45 : 1}" shape-rendering="crispEdges"><g class="c-${costume}${isWalking ? ' run' : ''}">${body}${group('la')}${group('lb')}</g></g>`
 }
 
