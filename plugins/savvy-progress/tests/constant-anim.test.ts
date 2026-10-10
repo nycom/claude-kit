@@ -60,8 +60,8 @@ test('desktop pane: a running card and a background row keep byte-identical anim
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'savvy-careful', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   await $.tool.call({ tool: 'Bash', command: 'npm run dev', run_in_background: true } as never)
   const before = await draw($, pane($))
-  // The crab and the platter of the card, the platter of the background row.
-  expect(before.animated.length).toBe(3)
+  // The crab of the card and the platter of the background row; the card's platter is a Client.
+  expect(before.animated.length).toBe(2)
 
   await clock.advance(61_370)
   await $.tool.call({ tool: STEP, done: 1, total: 3, note: 'red test', agentId: 'w1' } as never)
@@ -119,4 +119,41 @@ test('desktop band: the twinkle and the crab keep byte-identical drawings while 
   const anim = after.animated.join('')
   expect(anim).toContain('@media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3{animation:none}}')
   expect(anim).toContain(REDUCED[1])
+})
+
+// The desktop rebuilds a pane's images on every redraw, so even a constant source restarts.
+// A Client under one key is kept across redraws and draws again only on new props: the card's
+// platter lives in one, keyed by its run, its props nothing a tick, step or token touches.
+type ClientNode = { type: string; key?: string; props?: { key?: string; module?: string; props?: { source?: string } } }
+const markOf = async (ui: Awaited<ReturnType<$T['ui']['mount']>>, key: string) =>
+  ((await ui.findAll({ type: 'Client' })) as unknown as ClientNode[]).find(n => (n.props?.key ?? n.key) === key)
+
+test('desktop pane: a running card draws its platter in a Client keyed by its run, with byte-identical props across a tick, a step, tokens and the clock', async ($, on) => {
+  const clock = setup(on)
+  await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'savvy-careful', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+  let ui = await pane($)()
+  const before = await markOf(ui, 'mark-w1')
+  expect(before?.props?.module).toBe('hooks/mark.tsx')
+  const source = before?.props?.props?.source ?? ''
+  expect(source).toContain('class="spin"')
+  // The module draws that very source, as the image the card had before.
+  expect(await ui.drawn({ in: 'mark-w1' })).toMatchObject({ type: 'Svg', props: { source, width: 16, height: 66 } })
+  await ui.unmount()
+
+  await clock.advance(61_370)
+  await $.tool.call({ tool: STEP, done: 1, total: 3, note: 'red test', agentId: 'w1' } as never)
+  await tokens($)
+  ui = await pane($)()
+  expect(JSON.stringify(await markOf(ui, 'mark-w1'))).toBe(JSON.stringify(before))
+  await ui.unmount()
+})
+
+test('terminal pane: a running card keeps its text glyph, no Client', async ($, on) => {
+  setup(on)
+  await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'savvy-careful', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component: 'Pane', requestId: 'savvy-agents', props: PROPS })
+  expect((await ui.findAll({ type: 'Client' })).length).toBe(0)
+  expect(await markOf(ui, 'mark-w1')).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'fix tests' })).toBeDefined()
+  await ui.unmount()
 })

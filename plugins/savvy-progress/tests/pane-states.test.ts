@@ -34,7 +34,7 @@ const finish = ($: $T, id: string) =>
     wait: false,
   } as never)
 
-type Node = { type: string; key?: string; text?: string; props?: { key?: string; alt?: string; source?: string; width?: number; height?: number; props?: { label?: string } } }
+type Node = { type: string; key?: string; text?: string; props?: { key?: string; alt?: string; source?: string; width?: number; height?: number; props?: { label?: string; source?: string } } }
 const mount = ($: $T, surface: Surface) =>
   $.ui.mount({ plugin: 'savvy-progress', surface, component: 'Pane', requestId: 'savvy-agents', props: PROPS })
 
@@ -124,7 +124,8 @@ test('desktop: a running agent draws a turning platter in its tier colour, each 
   setup(on)
   await spawn($, 'fix tests', 'savvy-heavy')
   await spawn($, 'write docs', 'savvy-heavy')
-  const cards = (await leaves($, 'desktop')).filter(n => n.type === 'Svg').map(n => n.props?.source ?? '')
+  // A running card's platter is drawn by a Client (mark.tsx), its source in the Client's props.
+  const cards = (await leaves($, 'desktop')).map(n => (n.type === 'Client' ? n.props?.props?.source : n.type === 'Svg' ? n.props?.source : undefined) ?? '').filter(Boolean)
   const platters = cards.map(src => src.match(/<g fill="(#\w+)"><circle [^>]*opacity=".3"\/><g class="spin" style="[^"]*animation-delay:([^;"]+)/)).filter(Boolean)
   expect(platters.length).toBe(2)
   expect(platters.map(m => m?.[1])).toEqual(['#D85A30', '#D85A30'])

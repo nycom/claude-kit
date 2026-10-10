@@ -3,6 +3,7 @@ import type { EngineInterface, HookFailure, Register, ResolveInput } from 'claud
 
 import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
 import type { ControlProps } from './controls'
+import type { MarkProps } from './mark'
 
 const flow = atom({ plugin: 'savvy-progress', key: 'flow' } as const, null)
 const agents = atom({ plugin: 'savvy-progress', key: 'agents' } as const, [])
@@ -1546,14 +1547,19 @@ export const register: Register = (on, options) => {
         </Text>
       )
       const statusWord = (status: string) => (status === 'running' ? s.isRunning : status === 'failed' ? s.isFailed : status === 'planned' ? s.isPlanned : s.isFinished)
-      // The constant drawings (see `constant`) take the experiment's `isInteractive`.
+      // The constant drawings (see `constant`) take the experiment's `isInteractive`; a running
+      // card's platter is a Client (mark.tsx), kept across redraws by its run's key.
       const card = (a: AgentRun) => {
         const cardH = agentHeight(a)
         return (
           <Box key={a.id} flexDirection="row">
             <Svg source={crabColumnSvg(a, cardH)} alt={s.agent} width={CARD_CRAB_W} height={cardH} isInteractive={ANIMATED_INTERACTIVE} />
             <Svg source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W - CARD_CRAB_W - MARK_W} height={cardH} />
-            <Svg source={markColumnSvg(cardH, 16, a.status, colorOf(tierOf(a.type)), a.id)} alt={statusWord(a.status)} width={MARK_W} height={cardH} isInteractive={ANIMATED_INTERACTIVE} />
+            {a.status === 'running' ? (
+              <Client key={`mark-${a.id}`} module="./mark.tsx" props={{ source: markColumnSvg(cardH, 16, a.status, colorOf(tierOf(a.type)), a.id), alt: statusWord(a.status), width: MARK_W, height: cardH, isInteractive: ANIMATED_INTERACTIVE } satisfies MarkProps} />
+            ) : (
+              <Svg source={markColumnSvg(cardH, 16, a.status, colorOf(tierOf(a.type)), a.id)} alt={statusWord(a.status)} width={MARK_W} height={cardH} isInteractive={ANIMATED_INTERACTIVE} />
+            )}
           </Box>
         )
       }
