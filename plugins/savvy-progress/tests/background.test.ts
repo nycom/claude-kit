@@ -396,3 +396,18 @@ test('the stop button is a dim square icon that turns red on hover', async ($, o
   expect(JSON.stringify(await ui.drawn())).toMatch(/"label":"■","plain":true,"dimColor":true\},"press":\{[^}]*\},"hover":\{"color":"#b3261e"\}/)
   await ui.unmount()
 })
+
+test('a Stop that lists a task twice draws it once, every Client key once', async ($, on) => {
+  setup(on)
+  const shell = { id: 'b9', type: 'shell', status: 'running', description: 'npm test', command: 'npm test --watch' } as const
+  const cron = { id: 'c7', schedule: '*/5 * * * *', recurring: true, prompt: 'poll the queue' }
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [shell, shell], session_crons: [cron, cron] })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.drawn()
+  const keys = (await ui.findAll({ type: 'Client' })).map(n => n.key)
+  const text = (await ui.findAll({})).map(n => `${n.text ?? ''}${(n.props as { alt?: string }).alt ?? ''}`).join('|')
+  await ui.unmount()
+  expect(new Set(keys).size).toBe(keys.length)
+  expect(text).toContain('Background · 2')
+  expect(text.split('npm test --watch').length - 1).toBe(1)
+})

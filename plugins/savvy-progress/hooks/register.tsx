@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, HookFailure, Register, ResolveInput } from 'claude-code'
+import type { EngineInterface, HookFailure, Register, RenderElement } from 'claude-code'
 
 import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
 import type { ControlProps } from './controls'
@@ -79,15 +79,17 @@ const THEME_FALLBACK: Record<keyof Palette, string[]> = {
 let themeMtime = 0
 
 // A ui.render hook that fails leaves the engine's own drawing, which names no cause; this line does.
-// Only Box and Text, so it cannot fail the way the drawing did.
-const failedLine = ($: EngineInterface, e: ResolveInput, what: string, error: HookFailure) => {
-  const { Box, Text } = $.ui.resolve(e)
-  return (
-    <Box flexDirection="column">
-      <Text dimColor>{`savvy-progress could not draw this ${what}: ${error.kind}: ${(error.message ?? '').slice(0, 300)}`}</Text>
-    </Box>
-  )
-}
+// Plain Box and Text data, so it cannot fail the way the drawing did and needs no `$`.
+const failedLine = (what: string, error: HookFailure): RenderElement => ({
+  type: 'Box',
+  props: { flexDirection: 'column' },
+  children: [{ type: 'Text', props: { dimColor: true }, children: [`savvy-progress could not draw this ${what}: ${error.kind}: ${oneLine(error.message).slice(0, 300)}`] }],
+})
+
+// The Pane's catch never answers next(e): beneath the Pane is only the engine's blank "has not
+// drawn in this pane". A re-entry (the Pane raised again beneath this hook's own frame) is no
+// fault to the engine, but the handler's `$` calls reject then, so it too draws the line.
+export const paneFailed = (_$: unknown, _e: unknown, next: { error: HookFailure }): RenderElement => failedLine('pane', next.error)
 
 // skins' theme, while it names one, wins over colors.toml; a light one keeps the defaults,
 // as a light colors.toml does. skins' `dim` is the text tone this palette calls `muted`.
@@ -249,13 +251,13 @@ const blank = (): Flow => ({
 })
 
 const isNewFlow = (prev: Flow | null, input: ProgressInput): boolean =>
-  !prev || prev.isFinished || (input.title !== undefined && input.title.trim() !== prev.title)
+  !prev || prev.isFinished || (input.title !== undefined && oneLine(input.title) !== prev.title)
 
 const cleanTasks = (tasks: ProgressInput['tasks']): PlannedTask[] | undefined =>
   tasks
-    ?.filter(t => t.title?.trim())
+    ?.filter(t => oneLine(t.title))
     .map(t => ({
-      title: (t.title ?? '').trim(),
+      title: oneLine(t.title),
       tier: (t.tier ?? '').replace(/^savvy-/, '').trim().toLowerCase(),
       after: (t.after ?? []).filter(n => Number.isInteger(n) && n > 0),
     }))
@@ -269,7 +271,7 @@ const merge = (prev: Flow | null, input: ProgressInput): Flow => {
   const phase = input.phase && PHASES.includes(input.phase) ? input.phase : base.phase
   return {
     ...base,
-    title: input.title?.trim() || base.title,
+    title: oneLine(input.title) || base.title,
     total,
     done,
     phase: input.finished ? 'close' : phase,
@@ -1063,10 +1065,13 @@ async function repace($: EngineInterface): Promise<void> {
   clockTick = ms ? $.clock.every(ms, () => void $.clock.now().then(at => update($, now, () => at))) : null
 }
 
+// One entry per id, the last: two of one id draw one Client key twice, and the engine refuses the whole pane.
+const uniqById = <T extends { id: string }>(list: T[]): T[] => [...new Map(list.map(t => [t.id, t])).values()]
+
 // Writes the list only when it changed: every write redraws the pane.
 async function setBackground($: EngineInterface, change: (list: BackgroundTask[]) => BackgroundTask[]): Promise<void> {
   const prev = await read($, background)
-  if (JSON.stringify(change(prev)) !== JSON.stringify(prev)) await update($, background, list => change(list).slice(-100))
+  if (JSON.stringify(uniqById(change(prev))) !== JSON.stringify(prev)) await update($, background, list => uniqById(change(list)).slice(-100))
   await retick($)
 }
 
@@ -1083,8 +1088,13 @@ async function finishTask($: EngineInterface, isIt: (t: BackgroundTask) => boole
 const isFinal = (status: string | undefined): status is string => !!status && !/^(running|pending|in_progress)$/i.test(status)
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
-// A command or description on one line.
-const oneLine = (v: unknown): string => str(v).replace(/\s+/g, ' ').trim()
+// A command or description on one line, without the control characters (an ESC from tool
+// output) the engine refuses in a Text or an Svg alt: one of them fails the whole drawing.
+const oneLine = (v: unknown): string =>
+  str(v)
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 
 // The engine clips a cron's prompt to 1000 chars and appends "… [+N chars]": true when
 // `listed` is `prompt`, whole or clipped.
@@ -1098,7 +1108,7 @@ const startedTask = (e: Record<string, unknown>, r: Record<string, unknown>): Om
   if (e.tool === 'Bash' && str(r.backgroundTaskId)) return { id: str(r.backgroundTaskId), kind: 'shell', text: oneLine(e.command), status: 'running' }
   if (e.tool === 'Monitor' && str(r.taskId)) return { id: str(r.taskId), kind: 'monitor', text: oneLine(e.description) || oneLine(e.command), status: 'running' }
   if (e.tool === 'CronCreate' && str(r.id))
-    return { id: str(r.id), kind: 'cron', text: oneLine(e.prompt), status: 'scheduled', schedule: str(r.humanSchedule) || str(e.cron) }
+    return { id: str(r.id), kind: 'cron', text: oneLine(e.prompt), status: 'scheduled', schedule: oneLine(r.humanSchedule) || oneLine(e.cron) }
   // scheduledFor 0: the wakeup could not be armed.
   if (e.tool === 'ScheduleWakeup' && typeof r.scheduledFor === 'number' && r.scheduledFor > 0 && !r.stopped)
     return { id: `wake:${oneLine(e.prompt)}`, kind: 'wakeup', text: oneLine(e.reason) || oneLine(e.prompt), status: 'scheduled', nextAt: r.scheduledFor }
@@ -1269,9 +1279,9 @@ export const register: Register = (on, options) => {
           ...a,
           stepTotal: total,
           stepDone,
-          stepNote: input.note?.trim() || undefined,
+          stepNote: oneLine(input.note) || undefined,
           failedAttempts: isProgress ? undefined : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
-          blocked: (typeof input.blocked === 'string' && input.blocked.trim()) || undefined,
+          blocked: oneLine(input.blocked) || undefined,
         }
         // Toast on crossings only: a new question, or the third failed attempt.
         if (run.blocked && run.blocked !== a.blocked) alerts.push(`${s.agent} ${run.description}: ${s.toastInput} — ${clip(run.blocked, 120)}`)
@@ -1356,7 +1366,7 @@ export const register: Register = (on, options) => {
             .map(t => ({ id: t.id, kind: t.type as 'shell' | 'monitor', text: oneLine(t.command) || oneLine(t.description), status: 'running' as const, startedAt: at })),
           ...crons
             .filter(c => !known.has(c.id) && !wakes.some(p => isClipOf(oneLine(c.prompt), p)))
-            .map(c => ({ id: c.id, kind: 'cron' as const, text: oneLine(c.prompt), status: 'scheduled' as const, startedAt: at, schedule: c.schedule })),
+            .map(c => ({ id: c.id, kind: 'cron' as const, text: oneLine(c.prompt), status: 'scheduled' as const, startedAt: at, schedule: oneLine(c.schedule) })),
         ]
         const isLive = (t: BackgroundTask) => ids.has(t.id) || (t.kind === 'wakeup' && isWakeOf(t.id))
         return [...list.map(t => (isActive(t) && !isLive(t) ? { ...t, status: 'done' as const, endedAt: at } : t)), ...missed]
@@ -1377,7 +1387,7 @@ export const register: Register = (on, options) => {
         id: started.agentId ?? e.tool_use_id,
         agentId: started.agentId,
         type: e.subagentType,
-        description: e.description,
+        description: oneLine(e.description),
         model: started.model,
         status: 'running',
         startedAt: at,
@@ -1494,10 +1504,11 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
     pal = await paletteOf($)
-    const list = await read($, agents)
+    // Deduped again here: a list written before the write sites deduped still draws.
+    const list = uniqById(await read($, agents))
     const f = await read($, flow)
     const p: Panel = await read($, panel)
-    const bg = await read($, background)
+    const bg = uniqById(await read($, background))
     const at = Math.max(await read($, now), ...list.map(a => a.startedAt), ...bg.map(t => t.startedAt), 0)
 
     const running = list.filter(a => a.status === 'running').reverse()
@@ -1742,7 +1753,7 @@ export const register: Register = (on, options) => {
         )}
       </Box>
     )
-  }).catch(($, e, next) => (next.error.kind === 're-entry' ? next(e) : failedLine($, e, 'pane', next.error)))
+  }).catch(paneFailed)
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     pal = await paletteOf($)
@@ -1856,7 +1867,7 @@ export const register: Register = (on, options) => {
     const { Box } = $.ui.resolve(e)
     return (
       <Box flexDirection="column">
-        {failedLine($, e, 'band', next.error)}
+        {failedLine('band', next.error)}
         {theirs}
       </Box>
     )
