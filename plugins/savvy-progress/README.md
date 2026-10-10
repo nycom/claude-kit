@@ -82,7 +82,7 @@ If `~/.local/state/omarchy/current/theme/colors.toml` exists, the panel and the 
 
 A missing key keeps its default colour. A file with `mode = "light"` is ignored. On the desktop the text, track and tile colours apply only while the host is in dark mode; `accent` and the terminal colours apply whenever a theme is loaded. The file is checked every 2 seconds while it exists (read again only when it changes) and every 60 seconds while it is missing, so a theme installed later is picked up.
 
-While the skins mod has a skin on, its theme wins over the file, and a `/skin` switch redraws the panel and the band at once: its `dim` is the dim text, a light skin keeps the file's accent and terminal colours but draws none of the dark-mode panel colours, and with the skin off the file applies again. Without skins installed, the file alone applies.
+While the skins mod has a dark skin on, its theme wins over the file, and a `/skin` switch redraws the panel and the band at once: its `dim` is the dim text. A light skin behaves like a light host: the file's accent and terminal colours still apply (they are your own pick and are not tied to the mode, with no contrast check against the skin) and none of the dark-mode panel colours are drawn. With the skin off the file applies again. Without skins installed, the file alone applies.
 
 ## Settings
 
