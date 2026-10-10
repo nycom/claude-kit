@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HookFailure, Register, ResolveInput } from 'claude-code'
 
 import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
+import type { ControlProps } from './controls'
 
 const flow = atom({ plugin: 'savvy-progress', key: 'flow' } as const, null)
 const agents = atom({ plugin: 'savvy-progress', key: 'agents' } as const, [])
@@ -1119,6 +1120,9 @@ async function stopTask($: EngineInterface, t: BackgroundTask): Promise<void> {
   await finishTask($, x => x.id === t.id, 'killed')
 }
 
+const toggleCollapsed = ($: EngineInterface) => update($, panel, prev => ({ ...prev, isDoneCollapsed: !prev.isDoneCollapsed }))
+const toggleCompactView = ($: EngineInterface) => update($, panel, prev => ({ ...prev, isCompact: !prev.isCompact }))
+
 // --- terminal drawing: the same rows in text.
 
 const ctxBar = (pct: number, width: number): string => {
@@ -1473,6 +1477,18 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // A desktop control's click (controls.tsx), named by its Client's key.
+  on('ui.message', async ($, e, next) => {
+    if (e.requestId !== PANE || (e.data as { press?: unknown } | null)?.press !== true) return next(e)
+    if (e.element === 'done') await toggleCollapsed($)
+    else if (e.element === 'compact') await toggleCompactView($)
+    else if (e.element.startsWith('stop-')) {
+      const x = (await read($, background)).find(t => `stop-${t.id}` === e.element && isActive(t))
+      if (x) await stopTask($, x)
+    } else return next(e)
+    return {}
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const s = tr()
     const ui = $.ui.resolve(e)
@@ -1493,20 +1509,21 @@ export const register: Register = (on, options) => {
     // The pane's title says "Agents"; inside, only the flow's own name.
     const title = f && !f.isFinished ? f.title : ''
 
+    const doneLabel = `${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length + bgEnded.length}`
     const toggleCompact = (
       <Button
         key="compact"
         label={p.isCompact ? '⊞' : '⊟'}
         plain
-        onPress={() => update($, panel, prev => ({ ...prev, isCompact: !prev.isCompact }))}
+        onPress={() => toggleCompactView($)}
       />
     )
     const toggleDone = (
       <Button
         key="done"
-        label={`${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length + bgEnded.length}`}
+        label={doneLabel}
         plain
-        onPress={() => update($, panel, prev => ({ ...prev, isDoneCollapsed: !prev.isDoneCollapsed }))}
+        onPress={() => toggleCollapsed($)}
       />
     )
     const isEmpty = list.length === 0 && planned.length === 0 && bg.length === 0
@@ -1516,7 +1533,12 @@ export const register: Register = (on, options) => {
     const summary = `≈${fmtCost(t.cost)}, ${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
 
     if (e.surface === 'desktop' && 'Svg' in ui) {
-      const { Svg } = ui
+      const { Svg, Client } = ui
+      // Pane Buttons' presses never land on the desktop: the controls are Clients, pressed by key.
+      const control = (key: string, props: ControlProps) => <Client key={key} module="./controls.tsx" props={props} />
+      const toggleCompact = control('compact', { label: p.isCompact ? '⊞' : '⊟' })
+      const toggleDone = control('done', { label: doneLabel })
+      const stopButton = (x: BackgroundTask) => control(`stop-${x.id}`, { label: '■', dim: true, hover: pal?.red ?? RED })
       const W = Math.max(240, Math.min(900, (e.props.bodyColumns || 40) * 8 - 8))
       const section = (key: string, text: string) => (
         <Text key={key} dimColor>

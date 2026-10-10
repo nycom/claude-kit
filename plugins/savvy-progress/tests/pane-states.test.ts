@@ -34,18 +34,18 @@ const finish = ($: $T, id: string) =>
     wait: false,
   } as never)
 
-type Node = { type: string; key?: string; text?: string; props?: { key?: string; alt?: string; source?: string; width?: number; height?: number } }
+type Node = { type: string; key?: string; text?: string; props?: { key?: string; alt?: string; source?: string; width?: number; height?: number; props?: { label?: string } } }
 const mount = ($: $T, surface: Surface) =>
   $.ui.mount({ plugin: 'savvy-progress', surface, component: 'Pane', requestId: 'savvy-agents', props: PROPS })
 
-// What the pane draws, leaf by leaf and in order: each Text, Button and Svg (its alt), no Box.
+// What the pane draws, leaf by leaf and in order: each Text, Button, Client and Svg (its alt), no Box.
 const leaves = async ($: $T, surface: Surface) => {
   const ui = await mount($, surface)
   const nodes = (await ui.findAll({})) as unknown as Node[]
   await ui.unmount()
   return nodes.filter(n => n.type !== 'Box')
 }
-const labelOf = (n: Node) => `${n.text ?? ''}${n.props?.alt ?? ''}`
+const labelOf = (n: Node) => `${n.text ?? ''}${n.props?.alt ?? ''}${n.props?.props?.label ?? ''}`
 
 // A tree the remote surface can draw: every drawing has markup and a finite size, no key repeats.
 const expectDrawable = (nodes: Node[]) => {
@@ -62,7 +62,7 @@ const expectDrawable = (nodes: Node[]) => {
 test('desktop pane with no agents: the header, the toggle and the empty line, nothing else', async ($, on) => {
   setup(on)
   const nodes = await leaves($, 'desktop')
-  expect(nodes.map(n => n.type)).toEqual(['Svg', 'Button', 'Text'])
+  expect(nodes.map(n => n.type)).toEqual(['Svg', 'Client', 'Text'])
   expect(nodes[2]?.text).toBe('No subagents yet.')
   expectDrawable(nodes)
 })
@@ -72,8 +72,8 @@ test('desktop pane with only ended agents and the Ended group collapsed: the hea
   await spawn($, 'fix tests')
   await end($, 'w1')
   const nodes = await leaves($, 'desktop')
-  expect(nodes.map(n => n.type)).toEqual(['Svg', 'Button', 'Button'])
-  expect(nodes[2]?.text).toBe('▸ Ended · 1')
+  expect(nodes.map(n => n.type)).toEqual(['Svg', 'Client', 'Client'])
+  expect(labelOf(nodes[2] as Node)).toBe('▸ Ended · 1')
   expectDrawable(nodes)
 })
 
@@ -83,16 +83,16 @@ test('desktop pane with only ended background rows: the toggle opens them, colla
   await finish($, 'b1')
   const open = await leaves($, 'desktop')
   // The row's data, then its mark.
-  expect(open.map(n => n.type)).toEqual(['Svg', 'Button', 'Button', 'Svg', 'Svg'])
-  expect(open[2]?.text).toBe('▾ Ended · 1')
+  expect(open.map(n => n.type)).toEqual(['Svg', 'Client', 'Client', 'Svg', 'Svg'])
+  expect(labelOf(open[2] as Node)).toBe('▾ Ended · 1')
   expect(labelOf(open[3] as Node)).toContain('npm run build')
   expectDrawable(open)
 
   const ui = await mount($, 'desktop')
-  await $.ui.press({ plugin: 'savvy-progress', key: 'done' })
+  await ui.post({ press: true }, { in: 'done' })
   await ui.unmount()
   const folded = await leaves($, 'desktop')
-  expect(folded.map(n => n.type)).toEqual(['Svg', 'Button', 'Button'])
+  expect(folded.map(n => n.type)).toEqual(['Svg', 'Client', 'Client'])
   expectDrawable(folded)
 })
 
@@ -134,7 +134,7 @@ test('desktop: a running agent draws a turning platter in its tier colour, each 
   expect(cards.join('')).not.toContain('class="live"')
 
   const ui = await mount($, 'desktop')
-  await $.ui.press({ plugin: 'savvy-progress', key: 'compact' })
+  await ui.post({ press: true }, { in: 'compact' })
   const compact = (await ui.findAll({ type: 'Svg' })) as unknown as Node[]
   await ui.unmount()
   expect(compact[0]?.props?.source?.match(/<g class="spin"/g)?.length).toBe(2)

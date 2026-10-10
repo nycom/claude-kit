@@ -82,7 +82,7 @@ test('desktop compact pane: the crabs and platters keep their drawing while the 
   const clock = setup(on)
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'savvy-heavy', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   const ui = await pane($)()
-  await $.ui.press({ plugin: 'savvy-progress', key: 'compact' })
+  await ui.post({ press: true }, { in: 'compact' })
   await ui.unmount()
   const before = await draw($, pane($))
   expect(before.animated.length).toBeGreaterThan(0)

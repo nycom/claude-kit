@@ -111,11 +111,13 @@ test('Stop: TaskStop for a shell, CronDelete for a cron, ScheduleWakeup stop for
   await bash($)
   await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
   await $.tool.call({ tool: 'ScheduleWakeup', delaySeconds: 720, reason: 'wait for CI', prompt: '/loop check CI' } as never)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.findAll({ type: 'Button', text: '■' })).length).toBe(3)
-    await ui.unmount()
-  }
+  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await term.findAll({ type: 'Button', text: '■' })).length).toBe(3)
+  await term.unmount()
+  // The desktop's Stops are Client regions (controls.tsx).
+  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(((await desk.findAll({ type: 'Client' })) as unknown as { props: { props: { label: string } } }[]).filter(n => n.props.props.label === '■').length).toBe(3)
+  await desk.unmount()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await $.ui.press({ plugin: 'savvy-progress', key: 'stop-b1' })

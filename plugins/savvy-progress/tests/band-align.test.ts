@@ -59,9 +59,9 @@ test('desktop band: dot, bar, pill, crab and the attention chip share one centre
   expect(num(/<rect class="r" x="[\d.]+" y="([\d.]+)"/, chip.props.source) + 7.5).toBe(mid)
 })
 
-// A background row: the drawing and the Stop Button share a row Box. With alignItems center
-// the host centres each child's margin box on the row; the Button's margin-block is symmetric,
-// so its visual centre is the row's centre: the taller of the image and the band line, halved.
+// A background row: the drawing and the Stop control (a one-line Client region) share a row
+// Box. With alignItems center the host centres each child on the row, so the control's centre
+// is the row's centre: the taller of the image and the band line, halved.
 test('desktop background rows: the platter and every other mark sit on the Stop button centre line', async ($, on) => {
   mock.clock(on, { now: Date.UTC(2026, 9, 9, 12, 2, 0) })
   on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
@@ -78,9 +78,9 @@ test('desktop background rows: the platter and every other mark sit on the Stop 
   await notify('b2', 'completed')
   await notify('b3', 'failed')
 
-  type Node = { type: string; props: { flexDirection?: string; alignItems?: string; alt?: string; source?: string; height?: number; label?: string }; children?: Node[] }
+  type Node = { type: string; props: { flexDirection?: string; alignItems?: string; alt?: string; source?: string; height?: number; props?: { label?: string } }; children?: Node[] }
   const ui = await $.ui.mount({ plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', surface: 'desktop', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
-  // A row: its drawings (the data, then the mark) in a row Box, then the Stop button.
+  // A row: its drawings (the data, then the mark) in a row Box, then the Stop control.
   const rows = ((await ui.findAll({ type: 'Box' })) as unknown as Node[]).filter(b => b.props.alignItems === 'center' && b.children?.[0]?.children?.[1]?.props.alt?.length)
   await ui.unmount()
   expect(rows.length).toBe(4)
@@ -100,7 +100,8 @@ test('desktop background rows: the platter and every other mark sit on the Stop 
     const [kind, y] = ring ? ['running', Number(ring[1])] : done ? ['done', Number(done[1])] : failed ? ['failed', Number(failed[1]) + 4] : planned ? ['planned', Number(planned[1])] : ['none', NaN]
     marks[kind] = y
     if (button) {
-      expect(button.props.label).toBe('■')
+      expect(button.type).toBe('Client')
+      expect(button.props.props?.label).toBe('■')
       expect(row.props.alignItems).toBe('center')
       const buttonCentre = Math.max(img.props.height ?? 0, BAND_LINE) / 2
       expect(Math.abs(y - buttonCentre)).toBeLessThan(0.5)
