@@ -53,18 +53,21 @@ const accentOf = (): string => pal?.accent ?? ACCENT
 // Appended after the default styles (same specificity, later wins), in dark only: the
 // palette is a dark one and cards draw on the host's page, so a light host keeps the defaults.
 // Tile labels turn to the text colour: muted on the selection tile is too faint to read.
-const themeCss = (): string =>
-  pal
-    ? `<style>@media (prefers-color-scheme: dark){${[
-        pal.foreground && `.t{fill:${pal.foreground}}`,
-        pal.muted && `.s,.m,.tk{fill:${pal.muted}}`,
-        pal.foreground && `.tl{fill:${pal.foreground};fill-opacity:.7}`,
-        pal.selection && `.k{fill:${pal.selection}}.ln{stroke:${pal.selection}}`,
-        pal.red && `.r{fill:${pal.red}}`,
-        // Tiles take the theme's page colour: a quiet card, as the defaults draw it.
-        pal.background && `.rt,.tile{fill:${pal.background}}`,
-      ].join('')}}</style>`
-    : ''
+// Given the classes a drawing uses, only the rules that name one of them.
+const themeCss = (used?: Set<string>): string => {
+  if (!pal) return ''
+  const rules = [
+    pal.foreground && `.t{fill:${pal.foreground}}`,
+    pal.muted && `.s,.m,.tk{fill:${pal.muted}}`,
+    pal.foreground && `.tl{fill:${pal.foreground};fill-opacity:.7}`,
+    pal.selection && `.k{fill:${pal.selection}}`,
+    pal.selection && `.ln{stroke:${pal.selection}}`,
+    pal.red && `.r{fill:${pal.red}}`,
+    // Tiles take the theme's page colour: a quiet card, as the defaults draw it.
+    pal.background && `.rt,.tile{fill:${pal.background}}`,
+  ].filter((r): r is string => !!r && (!used || (r.split('{')[0] ?? '').split(',').some(sel => used.has(sel.slice(1)))))
+  return used && !rules.length ? '' : `<style>@media (prefers-color-scheme: dark){${rules.join('')}}</style>`
+}
 
 // Omarchy's keys, first found wins: dim text is `dark_foreground` (`muted` is a border
 // tone, too faint for text), tiles the dark background over the plain one.
@@ -179,6 +182,8 @@ const STRINGS = {
     background: 'Background',
     nextIn: (t: string) => `next in ${t}`,
     due: 'due',
+    moreRunning: (n: number) => `+${n} more running`,
+    moreEnded: (n: number) => `+${n} more ended`,
     stopFailed: (what: string, err: string) => `could not stop ${clip(what, 60)}: ${err}`,
     kinds: { shell: 'shell', monitor: 'monitor', cron: 'scheduled', wakeup: 'loop wakeup' },
   },
@@ -217,6 +222,8 @@ const STRINGS = {
     background: 'Фоновые',
     nextIn: (t: string) => `через ${t}`,
     due: 'пора',
+    moreRunning: (n: number) => `+${n} ещё работают`,
+    moreEnded: (n: number) => `+${n} ещё закончили`,
     stopFailed: (what: string, err: string) => `не удалось остановить ${clip(what, 60)}: ${err}`,
     kinds: { shell: 'команда', monitor: 'монитор', cron: 'по расписанию', wakeup: 'пробуждение цикла' },
   },
@@ -470,7 +477,7 @@ const bandTopSvg = (f: Flow, W: number): string => {
 
 // The band's crab, beside the layers, walking while an agent runs.
 const bandCrabSvg = (isWorking: boolean): string =>
-  constant(`band-crab|${isWorking}`, () => `<svg xmlns="http://www.w3.org/2000/svg" width="${CRAB_W}" height="${H}" viewBox="0 0 ${CRAB_W} ${H}">${CRAB_CSS}${crab(1, crabTop('other', 0.8), 'other', false, isWorking, 0.8)}</svg>`)
+  constant(`band-crab|${isWorking}`, () => `<svg xmlns="http://www.w3.org/2000/svg" width="${CRAB_W}" height="${H}" viewBox="0 0 ${CRAB_W} ${H}">${crabCss(isWorking ? ['other'] : [])}${crab(1, crabTop('other', 0.8), 'other', false, isWorking, 0.8)}</svg>`)
 
 const barText = (f: Flow, width: number): string => {
   const filled = Math.round(width * ratio(f))
@@ -499,7 +506,6 @@ const TIER_TEXT: Record<string, [string, string]> = {
   light: ['#177f5e', '#3fb88d'],
   other: ['#6e6d68', '#a3a29c'],
 }
-const tierCss = (i: 0 | 1): string => Object.entries(TIER_TEXT).map(([k, c]) => `.tc-${k}{fill:${c[i]}}`).join('')
 
 // Attention flag red: text >= 4.5:1 on both host backgrounds, and pill text on the fill.
 const RED = '#b3261e'
@@ -629,12 +635,31 @@ const totals = (list: AgentRun[], at: number) => {
 
 // --- desktop drawings: each row is a few SVGs side by side, as the band above the prompt is.
 
-const PANE_CSS = `<style>
-.t{fill:#1f1f1f}.s{fill:#6b6b68}.m{fill:#73736f}.k{fill:#ecebe8}.ln{stroke:#e4e4e1}.tile{fill:#f4f3f0}.r{fill:${RED}}.rt{fill:#ffffff}${tierCss(0)}
-@media (prefers-color-scheme: dark){.t{fill:#ececec}.s{fill:#a8a8a4}.m{fill:#9d9d98}.k{fill:#2c2c2b}.ln{stroke:#333331}.tile{fill:#262625}.r{fill:#ff8a80}.rt{fill:#1f1e1d}${tierCss(1)}}
-.spin{animation:spin 1.8s linear infinite}@keyframes spin{to{transform:rotate(1turn)}}
-@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}
-</style>`
+// Each pane class's light and dark rule. A drawing carries only the classes it uses: the host
+// counts every character of every drawing against the whole pane's bound.
+const PANE_TONES: [cls: string, light: string, dark: string][] = [
+  ['t', 'fill:#1f1f1f', 'fill:#ececec'],
+  ['s', 'fill:#6b6b68', 'fill:#a8a8a4'],
+  ['m', 'fill:#73736f', 'fill:#9d9d98'],
+  ['k', 'fill:#ecebe8', 'fill:#2c2c2b'],
+  ['ln', 'stroke:#e4e4e1', 'stroke:#333331'],
+  ['tile', 'fill:#f4f3f0', 'fill:#262625'],
+  ['r', `fill:${RED}`, 'fill:#ff8a80'],
+  ['rt', 'fill:#ffffff', 'fill:#1f1e1d'],
+  ...Object.entries(TIER_TEXT).map(([k, [light, dark]]): [string, string, string] => [`tc-${k}`, `fill:${light}`, `fill:${dark}`]),
+]
+const SPIN_CSS = '.spin{animation:spin 1.8s linear infinite}@keyframes spin{to{transform:rotate(1turn)}}@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}'
+
+const classesOf = (body: string): Set<string> => new Set([...body.matchAll(/class="([^"]*)"/g)].flatMap(m => (m[1] ?? '').split(' ')))
+
+const paneCss = (used: Set<string>): string => {
+  const tones = PANE_TONES.filter(([cls]) => used.has(cls))
+  const rules = tones.length
+    ? `${tones.map(([cls, light]) => `.${cls}{${light}}`).join('')}@media (prefers-color-scheme: dark){${tones.map(([cls, , dark]) => `.${cls}{${dark}}`).join('')}}`
+    : ''
+  const css = `${rules}${used.has('spin') ? SPIN_CSS : ''}`
+  return css && `<style>${css}</style>`
+}
 
 // Pixel Clawd from DockCrab (Clawdy): a 24×18 crab on a 30×28 grid, one costume per tier.
 // The body keeps the brand clay; the tier's color lives in the costume's accent.
@@ -662,37 +687,42 @@ const crabBody = (f: Fill, armFront = 0, armCls?: string): void => {
 }
 
 // Pure CSS in an image, so each frame is drawn on the page's main thread; fixed offsets only, so
-// the source never changes. Every crab walks; each costume adds its prop's own motion on top.
-const CRAB_CSS = `<style>
-.run .la{animation:st .5s steps(1) infinite}.run .lb{animation:st .5s steps(1) infinite -.25s}
-.run .bd{animation:bob .5s steps(1) infinite -.125s}
-.run g{transform-box:fill-box}
-@keyframes st{50%{transform:translateY(-1px)}}@keyframes bob{50%{transform:translateY(1px)}}
-.c-fable.run{animation:float 1s ease-in-out infinite}
-.c-fable.run .la,.c-fable.run .lb,.c-fable.run .bd{animation:none}
-.c-fable.run .ant{animation:blink 1s steps(1) infinite}
-.c-fable.run .star{animation:blink .5s steps(1) infinite -.25s}
-@keyframes float{50%{transform:translateY(-2px)}}@keyframes blink{50%{opacity:.15}}
-.c-heavy.run .it{animation:scan 1s steps(1) infinite}
-.c-heavy.run .gl{animation:blink 1s steps(1) infinite -.5s}
-@keyframes scan{25%{transform:translate(-1px,1px)}50%{transform:translate(-2px,2px)}75%{transform:translate(-1px,1px)}}
-.c-careful.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite}
-@keyframes twist{50%{transform:rotate(-35deg)}}
-.c-medium.run .pan{transform-origin:0 50%;animation:tilt 1s ease-in-out infinite}
-.c-medium.run .egg{animation:flip 1s ease-in-out infinite}
-@keyframes tilt{20%,40%{transform:rotate(-12deg)}}@keyframes flip{30%{transform:translateY(-5px) scaleY(-1)}60%{transform:translateY(0)}}
-.c-light.run .la{animation-duration:.25s}.c-light.run .lb{animation-duration:.25s;animation-delay:-.125s}
-.c-light.run .flag{transform-origin:0 50%;animation:wave .25s steps(1) infinite}
-@keyframes wave{50%{transform:skewY(-12deg) scaleX(.85)}}
-.c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite}
-@keyframes fence{50%{transform:rotate(25deg)}}
-.c-implement.run .c1{animation:blink .5s steps(1) infinite}.c-implement.run .c2{animation:blink .5s steps(1) infinite -.25s}
-.c-review.run .chk{animation:blink 1s steps(1) infinite}.c-review.run .chk2{animation:blink 1s steps(1) infinite -.5s}
-.c-design.run .it{transform-origin:0 100%;animation:paint .5s ease-in-out infinite}
-@keyframes paint{50%{transform:rotate(-20deg)}}
-.c-test.run .bub{animation:blink .5s steps(1) infinite}.c-test.run .bub2{animation:blink .5s steps(1) infinite -.25s}
-@media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}
-</style>`
+// the source never changes. Every crab walks (the '' rules); each costume adds its prop's own
+// motion on top. A drawing takes the rules of the costumes that walk in it and the keyframes
+// those name; a crab standing still takes none.
+const CRAB_MOTION: Record<string, string> = {
+  '': '.run .la{animation:st .5s steps(1) infinite}.run .lb{animation:st .5s steps(1) infinite -.25s}.run .bd{animation:bob .5s steps(1) infinite -.125s}.run g{transform-box:fill-box}',
+  fable:
+    '.c-fable.run{animation:float 1s ease-in-out infinite}.c-fable.run .la,.c-fable.run .lb,.c-fable.run .bd{animation:none}.c-fable.run .ant{animation:blink 1s steps(1) infinite}.c-fable.run .star{animation:blink .5s steps(1) infinite -.25s}',
+  heavy: '.c-heavy.run .it{animation:scan 1s steps(1) infinite}.c-heavy.run .gl{animation:blink 1s steps(1) infinite -.5s}',
+  careful: '.c-careful.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite}',
+  medium: '.c-medium.run .pan{transform-origin:0 50%;animation:tilt 1s ease-in-out infinite}.c-medium.run .egg{animation:flip 1s ease-in-out infinite}',
+  light: '.c-light.run .la{animation-duration:.25s}.c-light.run .lb{animation-duration:.25s;animation-delay:-.125s}.c-light.run .flag{transform-origin:0 50%;animation:wave .25s steps(1) infinite}',
+  explore: '.c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite}',
+  implement: '.c-implement.run .c1{animation:blink .5s steps(1) infinite}.c-implement.run .c2{animation:blink .5s steps(1) infinite -.25s}',
+  review: '.c-review.run .chk{animation:blink 1s steps(1) infinite}.c-review.run .chk2{animation:blink 1s steps(1) infinite -.5s}',
+  design: '.c-design.run .it{transform-origin:0 100%;animation:paint .5s ease-in-out infinite}',
+  test: '.c-test.run .bub{animation:blink .5s steps(1) infinite}.c-test.run .bub2{animation:blink .5s steps(1) infinite -.25s}',
+}
+const CRAB_KEYFRAMES: Record<string, string> = {
+  st: '50%{transform:translateY(-1px)}',
+  bob: '50%{transform:translateY(1px)}',
+  float: '50%{transform:translateY(-2px)}',
+  blink: '50%{opacity:.15}',
+  scan: '25%{transform:translate(-1px,1px)}50%{transform:translate(-2px,2px)}75%{transform:translate(-1px,1px)}',
+  twist: '50%{transform:rotate(-35deg)}',
+  tilt: '20%,40%{transform:rotate(-12deg)}',
+  flip: '30%{transform:translateY(-5px) scaleY(-1)}60%{transform:translateY(0)}',
+  wave: '50%{transform:skewY(-12deg) scaleX(.85)}',
+  fence: '50%{transform:rotate(25deg)}',
+  paint: '50%{transform:rotate(-20deg)}',
+}
+const crabCss = (walking: string[]): string => {
+  if (!walking.length) return ''
+  const rules = ['', ...new Set(walking)].map(c => CRAB_MOTION[c] ?? '').join('')
+  const frames = [...new Set([...rules.matchAll(/animation:(\w+)/g)].map(m => m[1] ?? ''))].filter(n => n in CRAB_KEYFRAMES)
+  return `<style>${rules}${frames.map(n => `@keyframes ${n}{${CRAB_KEYFRAMES[n]}}`).join('')}@media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}</style>`
+}
 
 const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
   // Fable: astronaut in a glass dome; floats instead of walking, the antenna and the star blink.
@@ -831,8 +861,10 @@ const statusMark = (x: number, y: number, status: string, color: string, id = ''
   return `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="#9a9a96" stroke-width="1.4"/><path d="M${x} ${y - 2.5}v2.8l1.8 1.2" fill="none" stroke="#9a9a96" stroke-width="1.4" stroke-linecap="round"/>`
 }
 
-const svg = (W: number, H: number, body: string): string =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${PANE_CSS}${themeCss()}${body}</svg>`
+const svg = (W: number, H: number, body: string): string => {
+  const used = classesOf(body)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${paneCss(used)}${themeCss(used)}${body}</svg>`
+}
 
 // A card or a background row is three drawings in a row: the crab column (a background row
 // has none), the data, and the status mark column; the crab and the mark are constant and draw
@@ -844,7 +876,7 @@ const rowLine = (W: number, h: number): string => `<line class="ln" x1="0" y1="$
 const crabColumnSvg = (a: AgentRun, h: number, isWalking: boolean): string => {
   const costume = costumeOf(a)
   const tint = colorOf(tierOf(a.type))
-  return constant(`crab|${costume}|${tint}|${isWalking}|${h}`, () => svg(CARD_CRAB_W, h, `${CRAB_CSS}${crab(0, 14, costume, false, isWalking, CRAB_SCALE, tint)}\n${rowLine(CARD_CRAB_W, h)}`))
+  return constant(`crab|${costume}|${tint}|${isWalking}|${h}`, () => svg(CARD_CRAB_W, h, `${crabCss(isWalking ? [costume] : [])}${crab(0, 14, costume, false, isWalking, CRAB_SCALE, tint)}\n${rowLine(CARD_CRAB_W, h)}`))
 }
 
 const markColumnSvg = (h: number, y: number, status: string, color: string, id: string): string =>
@@ -979,7 +1011,7 @@ const compactIconsSvg = (shown: ReturnType<typeof compactIcons>['shown']): strin
     svg(
       W,
       32,
-      CRAB_CSS +
+      crabCss(shown.filter(ic => ic.run).map(ic => ic.k)) +
         shown
           .map(
             (ic, i) =>
@@ -1063,6 +1095,50 @@ async function repace($: EngineInterface): Promise<void> {
   clockTick?.cancel()
   tickMs = ms
   clockTick = ms ? $.clock.every(ms, () => void $.clock.now().then(at => update($, now, () => at))) : null
+}
+
+// The desktop refuses a whole pane past 262144 characters of JSON and shows only "Nothing to
+// show yet"; the engine blanks every Client past 1e5 characters of text. Neither says so. So the
+// pane draws its items while both totals fit, with margin, and counts the rest on one line.
+const HOST_MAX = 200_000
+const ENGINE_MAX = 90_000
+const ENDED_MAX = 20
+
+// What the engine's text budget counts of a drawing: a Client's props, an Svg's alt, a key, a
+// label and every string; never an Svg's source.
+type Counted = { type?: string; props?: { key?: unknown; label?: unknown; alt?: unknown }; children?: unknown[] }
+const engineChars = (n: unknown): number => {
+  if (typeof n === 'string') return n.length
+  if (!n || typeof n !== 'object') return 0
+  const e = n as Counted
+  if (e.type === 'Client') return JSON.stringify(e.props ?? null).length
+  if (e.type === 'Svg') return String(e.props?.alt ?? '').length
+  return String(e.props?.key ?? '').length + String(e.props?.label ?? '').length + (e.children ?? []).reduce((sum: number, c) => sum + engineChars(c), 0)
+}
+
+// One pane's running totals. `take` draws items in order while each fits; the first that does
+// not stops the rest, so what is drawn is always a prefix.
+const budgetOf = () => {
+  let host = 0
+  let engine = 0
+  const add = (el: unknown, isFixed = false): boolean => {
+    const h = JSON.stringify(el)?.length ?? 0
+    const g = engineChars(el)
+    if (!isFixed && (host + h > HOST_MAX || engine + g > ENGINE_MAX)) return false
+    host += h
+    engine += g
+    return true
+  }
+  const take = <T,>(items: T[], draw: (x: T) => RenderElement): RenderElement[] => {
+    const out: RenderElement[] = []
+    for (const x of items) {
+      const el = draw(x)
+      if (!add(el)) break
+      out.push(el)
+    }
+    return out
+  }
+  return { add, take }
 }
 
 // One entry per id, the last: two of one id draw one Client key twice, and the engine refuses the whole pane.
@@ -1604,22 +1680,42 @@ export const register: Register = (on, options) => {
           </Box>
         )
       }
+      const header = <Svg source={headerSvg(W, title, t)} alt={title ? `${title}: ${summary}` : summary} width={W} height={headerHeight(title)} />
+      const plannedRows = planned.map(pl => (
+        <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
+      ))
+      const budget = budgetOf()
+      for (const el of [header, toggleCompact, toggleDone, ...plannedRows]) budget.add(el, true)
+      // Running cards first, then background work; once one does not fit, the rest are a count.
+      const runCards = budget.take(running, card)
+      const isRunCut = runCards.length < running.length
+      const bgRows = isRunCut ? [] : budget.take(bgActive, bgCard)
+      const moreRunning = running.length + bgActive.length - runCards.length - bgRows.length
+      // The newest ended items, agents and rows alike, drawn in the group's order: agents, then rows.
+      const endedAt = (x: { startedAt: number; endedAt?: number }) => x.endedAt ?? x.startedAt
+      const newest = new Set<AgentRun | BackgroundTask>([...finished, ...bgEnded].sort((a, b) => endedAt(b) - endedAt(a)).slice(0, ENDED_MAX))
+      const newestCards = p.isDoneCollapsed ? [] : finished.filter(a => newest.has(a))
+      const endCards = budget.take(newestCards, card)
+      const endRows = p.isDoneCollapsed || endCards.length < newestCards.length ? [] : budget.take(bgEnded.filter(x => newest.has(x)), bgCard)
+      const moreEnded = finished.length + bgEnded.length - endCards.length - endRows.length
+      const moreRun = section('more-run', s.moreRunning(moreRunning))
       return (
         <Box flexDirection="column">
-          <Svg source={headerSvg(W, title, t)} alt={title ? `${title}: ${summary}` : summary} width={W} height={headerHeight(title)} />
+          {header}
           {toggleCompact}
           {isEmpty && <Text dimColor>{s.empty}</Text>}
           {running.length > 0 && section('h-run', `${s.running} · ${running.length}`)}
-          {running.map(card)}
+          {runCards}
+          {isRunCut && moreRun}
           {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
-          {planned.map(pl => (
-            <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
-          ))}
-          {bgActive.length > 0 && section('h-bg', `${s.background} · ${bgActive.length}`)}
-          {bgActive.map(bgCard)}
+          {plannedRows}
+          {bgActive.length > 0 && !isRunCut && section('h-bg', `${s.background} · ${bgActive.length}`)}
+          {bgRows}
+          {!isRunCut && moreRunning > 0 && moreRun}
           {hasEnded && toggleDone}
-          {!p.isDoneCollapsed && finished.map(card)}
-          {!p.isDoneCollapsed && bgEnded.map(bgCard)}
+          {endCards}
+          {endRows}
+          {!p.isDoneCollapsed && moreEnded > 0 && section('more-ended', s.moreEnded(moreEnded))}
         </Box>
       )
     }

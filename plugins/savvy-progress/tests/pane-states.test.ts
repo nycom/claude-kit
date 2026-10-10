@@ -130,8 +130,11 @@ test('desktop: a running agent draws a turning platter in its tier colour, each 
   expect(platters.length).toBe(2)
   expect(platters.map(m => m?.[1])).toEqual(['#D85A30', '#D85A30'])
   expect(new Set(platters.map(m => m?.[2])).size).toBe(2)
-  expect(cards[0]).toContain('.spin{animation:spin 1.8s linear infinite}@keyframes spin{to{transform:rotate(1turn)}}')
-  expect(cards[0]).toContain('@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}')
+  // The turning rules ride with the platter's own drawing, not with drawings that never turn.
+  const platter = cards.find(src => src.includes('class="spin"'))
+  expect(platter).toContain('.spin{animation:spin 1.8s linear infinite}@keyframes spin{to{transform:rotate(1turn)}}')
+  expect(platter).toContain('@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}')
+  expect(cards.filter(src => !src.includes('class="spin"')).join('')).not.toContain('@keyframes spin')
   expect(cards.join('')).not.toContain('class="live"')
 
   const ui = await mount($, 'desktop')

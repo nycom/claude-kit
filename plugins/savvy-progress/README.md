@@ -32,6 +32,7 @@ A toast fires on a crossing only: the failed count reaching three, or a new ques
 - The panel lists Running, then Planned, then Background, and the Ended group last.
 - If drawing the panel or the band fails, a dim line says `savvy-progress could not draw this pane: <kind>: <message>` instead of leaving it blank; the band keeps the bands of other mods under it.
 - The group of runs that are no longer working is **Ended · N** (done and failed runs alike). Its header collapses it, and it collapses on its own when the last running agent ends; an expand you make stays until the next run ends. Background shells and monitors don't count as running agents here.
+- On the desktop the Ended group shows the 20 that ended last, agents and background rows alike, and a **+K more ended** line for the rest. The desktop drops a whole panel that grows too large, so when the cards would not fit, the panel draws as many as fit and one **+N more running** (or **+K more ended**) line; the terminal lists everything.
 - Text colours meet 4.5:1 on the light and dark host backgrounds: per-theme tier colours, darker meta and percent text, dark labels on the coloured pills, white on the red flag.
 - A planned task of the `medium` tier is labelled Sonnet.
 
