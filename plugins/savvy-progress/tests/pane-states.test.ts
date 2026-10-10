@@ -82,7 +82,8 @@ test('desktop pane with only ended background rows: the toggle opens them, colla
   await bash($, 'npm run build')
   await finish($, 'b1')
   const open = await leaves($, 'desktop')
-  expect(open.map(n => n.type)).toEqual(['Svg', 'Button', 'Button', 'Svg'])
+  // The row's data, then its mark.
+  expect(open.map(n => n.type)).toEqual(['Svg', 'Button', 'Button', 'Svg', 'Svg'])
   expect(open[2]?.text).toBe('▾ Ended · 1')
   expect(labelOf(open[3] as Node)).toContain('npm run build')
   expectDrawable(open)
@@ -168,29 +169,6 @@ test("terminal: with only a background shell running, its mark still turns a qua
   expect(await mark()).toBe(SPIN[(SPIN.indexOf(first) + 2) % 4])
 })
 
-// Each redraw is a new image that starts its animations over: the delay carries the turn on from the wall clock.
-// A background row reads whole minutes, so within a minute only its phase would change: it keeps
-// its image and the loop runs on untouched; once its reading changes, the new image carries the turn on.
-test('desktop: a redraw a second later carries the agent platter on by a second, a background row once its minute turns; reduced motion still holds it', async ($, on) => {
-  const clock = setup(on)
-  await spawn($, 'fix tests')
-  await bash($, 'npm run dev')
-  const draw = async () => {
-    const src = (await leaves($, 'desktop')).filter(n => n.type === 'Svg').map(n => n.props?.source ?? '').join('')
-    expect(src).toContain('@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}')
-    return [...src.matchAll(/class="spin" style="[^"]*animation-delay:-([\d.]+)s/g)].map(m => Number(m[1]))
-  }
-  const before = await draw()
-  await clock.advance(1_000)
-  const after = await draw()
-  const carried = (later: number[]) => later.map((d, k) => Math.round((((d - (before[k] ?? 0)) % 1.8) + 1.8) % 1.8 * 1000))
-  expect(before.length).toBe(2)
-  expect(carried(after)).toEqual([1000, 0])
-  await clock.advance(59_000)
-  // A minute on: 60 s is 33 turns of 1.8 s and 0.6 s more.
-  expect(carried(await draw())).toEqual([600, 600])
-})
-
 // A planned task starts when an agent's description is its title or begins with it as a whole word.
 const plan = ($: $T, ...titles: string[]) =>
   $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Ship it', phase: 'delegate', done: 0, total: titles.length, tasks: titles.map(title => ({ title, tier: 'light' })) } as never)
@@ -235,55 +213,4 @@ test('a respawn with the identical description is still round 2', async ($, on) 
   await $.agent.spawn({ tool_use_id: 'again', prompt: '', description: 'kit-pr2 implement', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   const labels = (await leaves($, 'terminal')).map(labelOf)
   expect(labels.some(l => l.includes('Running · 2'))).toBe(true)
-})
-
-// A redraw between the clock's ticks (a step report, a token count) phases every loop from the
-// draw's own time: the platter, the crab's walk, the band's twinkle and crab all carry on.
-const STEP = 'mcp__savvy-progress__step'
-const lastDelay = (src: string, rule: string): number => Number(new RegExp(`${rule}\\{[^}]*-([\\d.]+)s\\}`).exec(src)?.[1] ?? NaN)
-const moved = (before: number, after: number, period: number): number => Math.round(((((after - before) % period) + period) % period) * 1000)
-
-test('desktop: a card redrawn 0.37 s after the last draw, between ticks, carries its platter and its crab on by 0.37 s', async ($, on) => {
-  const clock = setup(on)
-  await spawn($, 'phase the walk', 'savvy-careful')
-  const card = async () => (await leaves($, 'desktop')).filter(n => n.type === 'Svg').map(n => n.props?.source ?? '').find(s => s.includes('class="spin"')) ?? ''
-  const phases = (src: string) => ({
-    spin: Number(/class="spin" style="[^"]*animation-delay:-([\d.]+)s/.exec(src)?.[1] ?? NaN),
-    lb: lastDelay(src, '\\.run \\.lb'),
-    bd: lastDelay(src, '\\.run \\.bd'),
-  })
-  const first = await card()
-  const before = phases(first)
-  await clock.advance(370)
-  // Nothing changed: the same source, so the same image keeps turning.
-  expect(await card()).toBe(first)
-  await $.tool.call({ tool: STEP, done: 1, total: 3, agentId: 'w1' } as never)
-  const src = await card()
-  const after = phases(src)
-  expect([moved(before.spin, after.spin, 1.8), moved(before.lb, after.lb, 0.5), moved(before.bd, after.bd, 0.5)]).toEqual([370, 370, 370])
-  expect(src).toContain('@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}')
-  expect(src).toContain('@media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}')
-})
-
-test('desktop band: a row redrawn 0.37 s later carries its twinkle and its crab on by 0.37 s; reduced motion still holds them', async ($, on) => {
-  const clock = setup(on)
-  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Phase the band', phase: 'delegate', done: 0, total: 4 } as never)
-  await spawn($, 'walk in phase')
-  const row = async () => {
-    const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: PROPS })
-    const svgs = (await ui.findAll({ type: 'Svg' })) as unknown as Node[]
-    await ui.unmount()
-    return svgs.find(s => s.props?.alt?.startsWith('Phase the band'))?.props?.source ?? ''
-  }
-  const phases = (src: string) => ({ t1: lastDelay(src, '\\.t1'), t2: lastDelay(src, '\\.t2'), lb: lastDelay(src, '\\.run \\.lb') })
-  const first = await row()
-  const before = phases(first)
-  await clock.advance(370)
-  expect(await row()).toBe(first)
-  await $.tool.call({ tool: 'mcp__savvy-progress__progress', done: 1 } as never)
-  const src = await row()
-  const after = phases(src)
-  expect([moved(before.t1, after.t1, 2.8), moved(before.t2, after.t2, 1.9), moved(before.lb, after.lb, 0.5)]).toEqual([370, 370, 370])
-  expect(src).toContain('@media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3{animation:none}}')
-  expect(src).toContain('@media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}')
 })

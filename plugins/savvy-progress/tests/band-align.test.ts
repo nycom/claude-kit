@@ -17,9 +17,13 @@ test('desktop band: dot, bar, pill, crab and the attention chip share one centre
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
   const svgs = (await ui.findAll({ type: 'Svg' })) as unknown as { props: { source: string; height: number; alt: string } }[]
   await ui.unmount()
+  // The bar's layers (the fill, the twinkle, the pill) share one origin; the crab is beside them.
   const row = svgs.find(s => s.props.alt.startsWith('Background tasks'))
+  const layer = svgs.find(s => s.props.source.includes('text-anchor="middle"') && s.props.source.includes('class="tk"'))
+  const crabImg = svgs.find(s => s.props.source.includes('class="c-other'))
   const chip = svgs.find(s => s.props.alt.includes('attention'))
-  if (!row || !chip) throw new Error('band row or chip missing')
+  if (!row || !layer || !crabImg || !chip) throw new Error('band row, pill, crab or chip missing')
+  for (const img of [layer, crabImg]) expect(img.props.height).toBe(row.props.height)
 
   // The skins band beside it is 23 tall; the Buttons centre on the band line, so must the images.
   const H = row.props.height
@@ -34,12 +38,13 @@ test('desktop band: dot, bar, pill, crab and the attention chip share one centre
   // The bar and the pill on it: both BAR_H tall, drawn in the bar's translated group.
   const barY = num(/<g transform="translate\([\d.]+,([\d.-]+)\)">\s*<rect class="k"/)
   const barH = num(/<rect class="k" width="[\d.]+" height="([\d.]+)"/)
-  const pillH = num(/<rect x="[\d.]+" width="[\d.]+" height="([\d.]+)" rx="[\d.]+" fill=/)
+  const pillH = num(/<rect x="[\d.]+" width="[\d.]+" height="([\d.]+)" rx="[\d.]+" fill=/, layer.props.source)
+  expect(num(/<g transform="translate\([\d.]+,([\d.-]+)\)">/, layer.props.source)).toBe(barY)
   expect(barY + barH / 2).toBe(mid)
   expect(barY + pillH / 2).toBe(mid)
 
   // The crab: its drawn rects' extent, scaled and offset, centres on the line.
-  const crab = /<g transform="translate\(([\d.]+),([\d.-]+)\) scale\(([\d.]+)\)"[^>]*>([\s\S]*?)<\/g><\/g>\s*<\/svg>/.exec(src)
+  const crab = /<g transform="translate\(([\d.]+),([\d.-]+)\) scale\(([\d.]+)\)"[^>]*>([\s\S]*?)<\/g><\/g>\s*<\/svg>/.exec(crabImg.props.source)
   if (!crab) throw new Error('crab missing')
   const [, , y, scale, body] = crab
   let top = Infinity
@@ -75,14 +80,17 @@ test('desktop background rows: the platter and every other mark sit on the Stop 
 
   type Node = { type: string; props: { flexDirection?: string; alignItems?: string; alt?: string; source?: string; height?: number; label?: string }; children?: Node[] }
   const ui = await $.ui.mount({ plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', surface: 'desktop', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
-  const rows = ((await ui.findAll({ type: 'Box' })) as unknown as Node[]).filter(b => b.children?.[0]?.props.alt?.length && b.props.flexDirection === 'row')
+  // A row: its drawings (the data, then the mark) in a row Box, then the Stop button.
+  const rows = ((await ui.findAll({ type: 'Box' })) as unknown as Node[]).filter(b => b.props.alignItems === 'center' && b.children?.[0]?.children?.[1]?.props.alt?.length)
   await ui.unmount()
   expect(rows.length).toBe(4)
 
   const BAND_LINE = 23
   const marks: Record<string, number> = {}
   for (const row of rows) {
-    const [img, button] = row.children as Node[]
+    const [drawings, button] = row.children as Node[]
+    const [data, img] = (drawings?.children ?? []) as Node[]
+    expect(img.props.height).toBe(data.props.height)
     const src = img.props.source ?? ''
     const ring = /<circle cx="[\d.]+" cy="([\d.]+)" r="[\d.]+" fill="none" stroke="[^"]+" opacity=".3"/.exec(src)
     const done = /<path d="M[\d.]+ ([\d.]+)l3.5 3.5 6.5-7"/.exec(src)
