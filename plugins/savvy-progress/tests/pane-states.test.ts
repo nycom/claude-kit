@@ -1,0 +1,204 @@
+import { expect, test } from 'claude-code/testing'
+
+import { bash, end, finish, PROPS, setup, spawn } from './drawing'
+import type { $T, Node } from './drawing'
+
+type Surface = 'terminal' | 'desktop'
+
+const mount = ($: $T, surface: Surface) =>
+  $.ui.mount({ plugin: 'savvy-progress', surface, component: 'Pane', requestId: 'savvy-agents', props: PROPS })
+
+// What the pane draws, leaf by leaf and in order: each Text, Button, Client and Svg (its alt), no Box.
+const leaves = async ($: $T, surface: Surface) => {
+  const ui = await mount($, surface)
+  const nodes = (await ui.findAll({})) as unknown as Node[]
+  await ui.unmount()
+  return nodes.filter(n => n.type !== 'Box')
+}
+const labelOf = (n: Node) => `${n.text ?? ''}${n.props?.alt ?? ''}${n.props?.props?.label ?? ''}`
+
+// A tree the remote surface can draw: every drawing has markup and a finite size, no key repeats.
+const expectDrawable = (nodes: Node[]) => {
+  for (const n of nodes.filter(n => n.type === 'Svg')) {
+    expect(n.props?.source?.startsWith('<svg')).toBe(true)
+    expect(n.props?.alt).toBeTruthy()
+    expect(Number.isFinite(n.props?.width) && (n.props?.width ?? 0) > 0).toBe(true)
+    expect(Number.isFinite(n.props?.height) && (n.props?.height ?? 0) > 0).toBe(true)
+  }
+  const keys = nodes.map(n => n.props?.key ?? n.key).filter(Boolean)
+  expect(new Set(keys).size).toBe(keys.length)
+}
+
+test('desktop pane with no agents: the header, the toggle and the empty line, nothing else', async ($, on) => {
+  setup(on)
+  const nodes = await leaves($, 'desktop')
+  expect(nodes.map(n => n.type)).toEqual(['Svg', 'Client', 'Text'])
+  expect(nodes[2]?.text).toBe('No subagents yet.')
+  expectDrawable(nodes)
+})
+
+test('desktop pane with only ended agents and the Ended group collapsed: the header and the toggle', async ($, on) => {
+  setup(on)
+  await spawn($, 'fix tests')
+  await end($, 'w1')
+  const nodes = await leaves($, 'desktop')
+  expect(nodes.map(n => n.type)).toEqual(['Svg', 'Client', 'Client'])
+  expect(labelOf(nodes[2] as Node)).toBe('▸ Ended · 1')
+  expectDrawable(nodes)
+})
+
+test('desktop pane with only ended background rows: the toggle opens them, collapsing leaves the header', async ($, on) => {
+  setup(on)
+  await bash($, 'npm run build')
+  await finish($, 'b1')
+  const open = await leaves($, 'desktop')
+  // The row's data, then its mark.
+  expect(open.map(n => n.type)).toEqual(['Svg', 'Client', 'Client', 'Svg', 'Svg'])
+  expect(labelOf(open[2] as Node)).toBe('▾ Ended · 1')
+  expect(labelOf(open[3] as Node)).toContain('npm run build')
+  expectDrawable(open)
+
+  const ui = await mount($, 'desktop')
+  await ui.post({ press: true }, { in: 'done' })
+  await ui.unmount()
+  const folded = await leaves($, 'desktop')
+  expect(folded.map(n => n.type)).toEqual(['Svg', 'Client', 'Client'])
+  expectDrawable(folded)
+})
+
+// Running first, then what is planned, then background work, and the Ended group last of all.
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface} pane order: running, Planned, Background, Ended (agents, then background rows)`, async ($, on) => {
+    setup(on)
+    await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Ship it', phase: 'delegate', done: 0, total: 3, tasks: [{ title: 'write docs', tier: 'light' }] } as never)
+    await spawn($, 'old agent')
+    await spawn($, 'live agent')
+    await end($, 'w1')
+    await bash($, 'old build')
+    await finish($, 'b1')
+    await bash($, 'live server')
+
+    const labels = (await leaves($, surface)).map(labelOf)
+    const at = (word: string) => labels.findIndex(l => l.includes(word))
+    const order = ['Running · 1', 'live agent', 'Planned · 1', 'write docs', 'Background · 1', 'live server', 'Ended · 2', 'old agent', 'old build']
+    expect(order.map(at).every(i => i >= 0)).toBe(true)
+    expect(order.map(at)).toEqual(order.map(at).sort((a, b) => a - b))
+    // The terminal's Text leaves also nest their children, so check the headings alone on both.
+    const heads = order.filter(w => / · \d$/.test(w))
+    expect(heads.map(at)).toEqual(heads.map(at).sort((a, b) => a - b))
+  })
+}
+
+// A running agent's mark is a 33⅓ platter: a faint ring, a marker that turns with its trail, a fixed spindle.
+test('desktop: a running agent draws a turning platter in its tier colour, each card out of phase', async ($, on) => {
+  setup(on)
+  await spawn($, 'fix tests', 'savvy-heavy')
+  await spawn($, 'write docs', 'savvy-heavy')
+  // A running card's platter is drawn by a Client (mark.tsx), its source in the Client's props.
+  const cards = (await leaves($, 'desktop')).map(n => (n.type === 'Client' ? n.props?.props?.source : n.type === 'Svg' ? n.props?.source : undefined) ?? '').filter(Boolean)
+  const platters = cards.map(src => src.match(/<g fill="(#\w+)"><circle [^>]*opacity=".3"\/><g class="spin" style="[^"]*animation-delay:([^;"]+)/)).filter(Boolean)
+  expect(platters.length).toBe(2)
+  expect(platters.map(m => m?.[1])).toEqual(['#D85A30', '#D85A30'])
+  expect(new Set(platters.map(m => m?.[2])).size).toBe(2)
+  // The turning rules ride with the platter's own drawing, not with drawings that never turn.
+  const platter = cards.find(src => src.includes('class="spin"'))
+  expect(platter).toContain('.spin{animation:spin 1.8s linear infinite}@keyframes spin{to{transform:rotate(1turn)}}')
+  expect(platter).toContain('@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}')
+  expect(cards.filter(src => !src.includes('class="spin"')).join('')).not.toContain('@keyframes spin')
+  expect(cards.join('')).not.toContain('class="live"')
+
+  const ui = await mount($, 'desktop')
+  await ui.post({ press: true }, { in: 'compact' })
+  // The compact crabs are one looping drawing: a mark Client, its source in its props.
+  const icons = ((await ui.findAll({ type: 'Client' })) as unknown as Node[]).find(n => (n.props?.key ?? n.key) === 'icons')?.props?.props?.source
+  await ui.unmount()
+  expect(icons?.match(/<g class="spin"/g)?.length).toBe(2)
+  // 5% larger than 4.375 and 3.75; the compact row sits low enough that the marker (r/3 at y - r) stays inside the 32px-high image.
+  expect(cards.join('')).toMatch(/<circle cx="[\d.]+" cy="16" r="4\.59" fill="none"/)
+  const ring = icons?.match(/<circle cx="[\d.]+" cy="([\d.]+)" r="3\.94" fill="none"/)
+  expect(ring).not.toBeNull()
+  expect(Number(ring?.[1]) - 3.94 - 3.94 / 3).toBeGreaterThanOrEqual(0)
+})
+
+test("terminal: a running agent's mark turns one step a second with the clock", async ($, on) => {
+  const clock = setup(on)
+  await spawn($, 'fix tests')
+  const SPIN = '◐◓◑◒'
+  const mark = async () => (await leaves($, 'terminal')).map(n => n.text ?? '').find(t => t.length === 1 && SPIN.includes(t)) ?? ''
+  const first = await mark()
+  expect(first).not.toBe('')
+  await clock.advance(1_000)
+  expect(await mark()).toBe(SPIN[(SPIN.indexOf(first) + 1) % 4])
+})
+
+test("terminal: with only a background shell running, its mark still turns a step on each minute's tick", async ($, on) => {
+  const clock = setup(on)
+  await bash($, 'npm run dev')
+  const SPIN = '◐◓◑◒'
+  const mark = async () => (await leaves($, 'terminal')).map(n => n.text ?? '').find(t => t.length === 1 && SPIN.includes(t)) ?? ''
+  const first = await mark()
+  expect(first).not.toBe('')
+  await clock.advance(60_000)
+  expect(await mark()).toBe(SPIN[(SPIN.indexOf(first) + 1) % 4])
+  await clock.advance(60_000)
+  expect(await mark()).toBe(SPIN[(SPIN.indexOf(first) + 2) % 4])
+})
+
+// A planned task starts when an agent's description is its title or begins with it as a whole word.
+const plan = ($: $T, ...titles: string[]) =>
+  $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Ship it', phase: 'delegate', done: 0, total: titles.length, tasks: titles.map(title => ({ title, tier: 'light' })) } as never)
+const planned = async ($: $T) => {
+  const labels = (await leaves($, 'terminal')).map(labelOf)
+  return { head: labels.find(l => l.startsWith('Planned')), rows: labels.filter(l => /\d\. kit/.test(l)) }
+}
+
+test('a planned task leaves Planned when an agent whose description starts with its title spawns', async ($, on) => {
+  setup(on)
+  await plan($, 'kit-pr2')
+  expect((await planned($)).head).toBe('Planned · 1')
+  await spawn($, 'kit-pr2 implement')
+  const labels = (await leaves($, 'terminal')).map(labelOf)
+  expect(labels.some(l => l.startsWith('Planned'))).toBe(false)
+  expect(labels.some(l => l.includes('Running · 1'))).toBe(true)
+  expect(labels.some(l => l.includes('kit-pr2 implement'))).toBe(true)
+})
+
+test('the longest matching title owns the agent: "kit-pr2 review" starts kit-pr2, not kit', async ($, on) => {
+  setup(on)
+  await plan($, 'kit', 'kit-pr2')
+  await spawn($, 'kit-pr2 review c1')
+  const p = await planned($)
+  expect(p.head).toBe('Planned · 1')
+  expect(p.rows.length).toBeGreaterThan(0)
+  expect(p.rows.some(r => r.includes('1. kit '))).toBe(true)
+  expect(p.rows.some(r => r.includes('kit-pr2'))).toBe(false)
+})
+
+test('a title is a whole word: "kit-pr2x implement" does not start "kit-pr2"', async ($, on) => {
+  setup(on)
+  await plan($, 'kit-pr2')
+  await spawn($, 'kit-pr2x implement')
+  expect((await planned($)).head).toBe('Planned · 1')
+})
+
+test('a respawn with the identical description is still round 2', async ($, on) => {
+  setup(on)
+  await plan($, 'kit-pr2')
+  await spawn($, 'kit-pr2 implement')
+  await $.agent.spawn({ tool_use_id: 'again', prompt: '', description: 'kit-pr2 implement', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+  const labels = (await leaves($, 'terminal')).map(labelOf)
+  expect(labels.some(l => l.includes('Running · 2'))).toBe(true)
+})
+
+test('terminal: a running mark never shows the planned glyph', async ($, on) => {
+  const clock = setup(on)
+  await spawn($, 'fix tests')
+  const PLANNED = '◷'
+  const marks: string[] = []
+  for (let i = 0; i < 4; i++) {
+    marks.push(...(await leaves($, 'terminal')).map(n => n.text ?? '').filter(t => t.length === 1 && '◴◷◶◵◐◓◑◒'.includes(t)))
+    await clock.advance(1_000)
+  }
+  expect(marks.length).toBe(4)
+  expect(marks).not.toContain(PLANNED)
+})

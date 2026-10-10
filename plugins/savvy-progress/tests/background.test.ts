@@ -1,11 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
 
-type $T = Parameters<TestBody>[0]
-type OnT = Parameters<TestBody>[1]
-
-const T0 = Date.UTC(2026, 9, 9, 12, 2, 0)
-const PANE = { plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never } as const
+import { bash, PROPS, T0 } from './drawing'
+import type { $T, OnT } from './drawing'
+const PANE = { plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', props: PROPS } as const
 
 const setup = (on: OnT, toasts: string[] = [], opens: string[] = [], calls: Record<string, unknown>[] = []) => {
   const clock = mock.clock(on, { now: T0 })
@@ -38,7 +35,6 @@ const countTicks = (on: OnT) => {
   return ticks
 }
 
-const bash = ($: $T) => $.tool.call({ tool: 'Bash', command: 'npm run dev -- --port 5173', run_in_background: true } as never)
 const notify = ($: $T, id: string, status: string) =>
   $.prompt.submit({
     text: `<task-notification>\n<task-id>${id}</task-id>\n<status>${status}</status>\n<summary>Background command finished</summary>\n</task-notification>`,
@@ -111,11 +107,13 @@ test('Stop: TaskStop for a shell, CronDelete for a cron, ScheduleWakeup stop for
   await bash($)
   await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
   await $.tool.call({ tool: 'ScheduleWakeup', delaySeconds: 720, reason: 'wait for CI', prompt: '/loop check CI' } as never)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.findAll({ type: 'Button', text: '■' })).length).toBe(3)
-    await ui.unmount()
-  }
+  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await term.findAll({ type: 'Button', text: '■' })).length).toBe(3)
+  await term.unmount()
+  // The desktop's Stops are Client regions (controls.tsx).
+  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(((await desk.findAll({ type: 'Client' })) as unknown as { props: { props: { label: string } } }[]).filter(n => n.props.props.label === '■').length).toBe(3)
+  await desk.unmount()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await $.ui.press({ plugin: 'savvy-progress', key: 'stop-b1' })
@@ -393,4 +391,19 @@ test('the stop button is a dim square icon that turns red on hover', async ($, o
   // `hover` is a sibling of `props` in the drawn tree, which findAll does not show.
   expect(JSON.stringify(await ui.drawn())).toMatch(/"label":"■","plain":true,"dimColor":true\},"press":\{[^}]*\},"hover":\{"color":"#b3261e"\}/)
   await ui.unmount()
+})
+
+test('a Stop that lists a task twice draws it once, every Client key once', async ($, on) => {
+  setup(on)
+  const shell = { id: 'b9', type: 'shell', status: 'running', description: 'npm test', command: 'npm test --watch' } as const
+  const cron = { id: 'c7', schedule: '*/5 * * * *', recurring: true, prompt: 'poll the queue' }
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [shell, shell], session_crons: [cron, cron] })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.drawn()
+  const keys = (await ui.findAll({ type: 'Client' })).map(n => n.key)
+  const text = (await ui.findAll({})).map(n => `${n.text ?? ''}${(n.props as { alt?: string }).alt ?? ''}`).join('|')
+  await ui.unmount()
+  expect(new Set(keys).size).toBe(keys.length)
+  expect(text).toContain('Background · 2')
+  expect(text.split('npm test --watch').length - 1).toBe(1)
 })

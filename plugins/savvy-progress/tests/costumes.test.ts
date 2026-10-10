@@ -1,9 +1,12 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { imgOf } from './drawing'
+
 // Which crab a worker wears: Explore's pirate, else a role from its type's name or its task, else its tier's.
 test('costumes: roles from the type name or the task, the tier costume otherwise', async ($, on) => {
   mock.clock(on)
   on('ui.toast', () => ({ value: undefined }))
+  on('turn.complete', () => ({ text: '' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: `a${++n}` }))
@@ -31,14 +34,24 @@ test('costumes: roles from the type name or the task, the tier costume otherwise
     ['general-purpose', 'address the comments', 'other'],
     ['general-purpose', 'update the fixture data', 'other'],
   ]
-  for (const [type, description] of cases)
-    await $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType: type, provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
-  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
-  const cards = (await ui.findAll({ type: 'Svg' })).map(s => String((s as { props: { source: string; alt: string } }).props.source))
-  for (const [, description, costume] of cases) {
-    const card = cards.find(c => c.includes(`>${description}<`))
-    expect(card).toBeDefined()
-    expect(card).toMatch(new RegExp(`class="c-${costume}( run)?"`))
+  // The pane draws only so much at once: ten cards a batch, each batch's agents ended before the next.
+  for (let from = 0; from < cases.length; from += 10) {
+    const batch = cases.slice(from, from + 10)
+    for (const [type, description] of batch)
+      await $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType: type, provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+    const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+    // Each card draws its crab, then its data; a looping crab is a mark Client, its source in its props.
+    type Node = { type: string; props?: { source?: string; module?: string; props?: { source?: string } } }
+    const cards = ((await ui.findAll({})) as unknown as Node[])
+      .map(n => imgOf(n)?.source)
+      .filter((src): src is string => src !== undefined)
+    for (const [, description, costume] of batch) {
+      const i = cards.findIndex(c => c.includes(`>${description}<`))
+      expect(i).toBeGreaterThan(0)
+      expect(cards[i - 1]).toMatch(new RegExp(`class="c-${costume}( run)?"`))
+    }
+    await ui.unmount()
+    for (let k = from; k < from + batch.length; k++)
+      await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: `a${k + 1}`, agentId: `a${k + 1}` } as never)
   }
-  await ui.unmount()
 })

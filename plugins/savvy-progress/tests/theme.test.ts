@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { Plugin } from 'claude-code/testing'
 
 // The Agents pane takes its colours from Omarchy's colors.toml, follows a theme switch,
 // and keeps its own colours when the file is missing or goes away.
@@ -24,6 +25,8 @@ test('theme: colors.toml recolours the pane; a missing file keeps the defaults',
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+  // A question flags the card: its red pill is drawn, so the red rule is in the pane.
+  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, blocked: 'which db?', agentId: 'w1' } as never)
 
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
   const drawn = async () => {
@@ -31,6 +34,7 @@ test('theme: colors.toml recolours the pane; a missing file keeps the defaults',
     return (await ui.findAll({ type: 'Svg' })).map(s => String((s as { props: { source: string } }).props.source)).join('')
   }
 
+  // No skins plugin loaded here: its theme reads as absent and colors.toml applies, with no error.
   // No file: the default tile and text colours, nothing themed.
   expect(await drawn()).toContain('.tile{fill:#f4f3f0}')
   expect(await drawn()).not.toContain('#13141c')
@@ -62,5 +66,158 @@ test('theme: colors.toml recolours the pane; a missing file keeps the defaults',
   put(null)
   await clock.advance(2_000)
   expect(await drawn()).not.toContain('#d0d0d0')
+  await ui.unmount()
+})
+
+// skins publishes the chat's theme; while it names one, the pane and the band draw in it.
+const SKINS: Plugin = {
+  name: 'skins',
+  register(on) {
+    // `/skin <json>` sets the theme, as skins' /skin would.
+    on('prompt.submit', async ($, e, next) => {
+      if (e.text.startsWith('/skin ')) await $.state.set({ plugin: 'skins', key: 'theme' } as const, JSON.parse(e.text.slice(6)))
+      return next(e)
+    })
+  },
+}
+
+test('theme: the skins theme wins over colors.toml, redraws when it changes, null falls back', { plugins: [SKINS] }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { HOME: '/home/k' })
+  const file = '/home/k/.local/state/omarchy/current/theme/colors.toml'
+  const TOKYO = 'accent = "#7aa2f7"\nselection = "#292e42"\nbackground = "#1a1b26"\nforeground = "#a9b1d6"\ndark_foreground = "#565f89"\nred = "#f7768e"\n'
+  on('fs.stat', (_$, e) => {
+    if (e.path === file) return { value: { kind: 'file', mtimeMs: 1 } as never }
+    throw new Error('ENOENT')
+  })
+  on('fs.read', () => ({ value: TOKYO }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('tool.register', () => ({ value: undefined }) as never)
+  on('command.register', () => ({ value: undefined }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  const skin = (t: object | null) => $.prompt.submit({ text: `/skin ${JSON.stringify(t)}`, origin: { kind: 'user' }, wait: false } as never)
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
+  await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+  // A question flags the card: its red pill is drawn, so the red rule is in the pane.
+  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, blocked: 'which db?', agentId: 'w1' } as never)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'ship it', total: 2, done: 1 } as never)
+
+  const pane = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+  const band = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+  const drawn = async (ui: typeof pane | typeof band) => {
+    await clock.settle()
+    return (await ui.findAll({ type: 'Svg' })).map(s => String((s as unknown as { props: { source: string } }).props.source)).join('')
+  }
+  expect(await drawn(pane)).toContain('.t{fill:#a9b1d6}')
+
+  // skins' dim is the text tone savvy calls muted.
+  const ROSE = { mode: 'dark', accent: '#c4a7e7', foreground: '#e0def4', dim: '#908caa', red: '#eb6f92', selection: '#403d52', background: '#191724' }
+  await skin(ROSE)
+  for (const ui of [pane, band]) {
+    const rose = await drawn(ui)
+    expect(rose).toContain('<style>@media (prefers-color-scheme: dark){.t{fill:#e0def4}')
+    expect(rose).not.toContain('#a9b1d6')
+  }
+  const rose = await drawn(pane)
+  expect(rose).toContain('.s,.m,.tk{fill:#908caa}')
+  expect(rose).toContain('.k{fill:#403d52}')
+  expect(rose).toContain('.rt,.tile{fill:#191724}')
+  expect(rose).toContain('.r{fill:#eb6f92}')
+
+  // A switch redraws the mounted pane; a light skin draws no dark CSS but keeps colors.toml's accent.
+  await skin({ ...ROSE, foreground: '#ffffff' })
+  expect(await drawn(pane)).toContain('.t{fill:#ffffff}')
+  await skin({ ...ROSE, mode: 'light' })
+  const light = await drawn(pane)
+  expect(light).not.toContain('<style>@media (prefers-color-scheme: dark){')
+  expect(light).not.toContain('#a9b1d6')
+  // The desktop band draws in the file's accent, with no dark CSS either.
+  const lightBand = await drawn(band)
+  expect(lightBand).toContain('#7aa2f7')
+  expect(lightBand).not.toContain('<style>@media (prefers-color-scheme: dark){')
+  expect(lightBand).not.toContain('#c4a7e7')
+  // The terminal band keeps the file's accent (the skin's is not applied).
+  const term = await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+  await clock.settle()
+  const termDrawn = JSON.stringify(await term.drawn())
+  expect(termDrawn).toContain('#7aa2f7')
+  expect(termDrawn).not.toContain('#c4a7e7')
+  await term.unmount()
+
+  // The skin off: colors.toml again.
+  await skin(null)
+  expect(await drawn(pane)).toContain('.t{fill:#a9b1d6}')
+  await pane.unmount()
+  await band.unmount()
+})
+
+// A palette read that began under one skin and ends after a later one has been applied must not undo it.
+test('theme: a palette read overtaken by a skin switch does not overwrite the newer palette', { plugins: [SKINS] }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { HOME: '/home/k' })
+  const file = '/home/k/.local/state/omarchy/current/theme/colors.toml'
+  on('fs.stat', (_$, e) => {
+    if (e.path === file) return { value: { kind: 'file', mtimeMs: 1 } as never }
+    throw new Error('ENOENT')
+  })
+  on('fs.read', () => ({ value: 'accent = "#7aa2f7"\nforeground = "#a9b1d6"\n' }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('tool.register', () => ({ value: undefined }) as never)
+  on('command.register', () => ({ value: undefined }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  // The pane's render stops at its read of the file palette; the band's, begun after the switch to
+  // a dark skin, stops at its read of the flow. The pane's then finishes first, the band's last.
+  const gates: Record<string, { release: () => void; reached: Promise<void> }> = {}
+  const gate = (key: string) => {
+    let release = () => {}
+    let reach = () => {}
+    const held = new Promise<void>(r => (release = r))
+    gates[key] = { release, reached: new Promise<void>(r => (reach = r)) }
+    return { held, reach }
+  }
+  const palette = gate('theme')
+  const flow = gate('flow')
+  let armed = false
+  let isPaneHeld = false
+  on('state.get', async (_$, e, next) => {
+    const value = await next(e)
+    const { plugin, key } = e as { plugin?: string; key?: string }
+    if (armed && plugin === 'savvy-progress' && key === 'theme' && !isPaneHeld) {
+      isPaneHeld = true
+      palette.reach()
+      await palette.held
+    } else if (isPaneHeld && plugin === 'savvy-progress' && key === 'flow') {
+      flow.reach()
+      await flow.held
+    }
+    return value
+  })
+  const skin = (t: object) => $.prompt.submit({ text: `/skin ${JSON.stringify(t)}`, origin: { kind: 'user' }, wait: false } as never)
+  const ROSE = { mode: 'dark', accent: '#c4a7e7', foreground: '#e0def4', dim: '#908caa', red: '#eb6f92', selection: '#403d52', background: '#191724' }
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'ship it', total: 2, done: 1 } as never)
+  await skin({ ...ROSE, mode: 'light' })
+  await clock.settle()
+
+  armed = true
+  const props = { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never
+  const pane = $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props })
+  await gates.theme?.reached
+  await skin(ROSE)
+  const band = $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props })
+  await gates.flow?.reached
+  gates.theme?.release()
+  for (let i = 0; i < 500; i++) await Promise.resolve()
+  gates.flow?.release()
+  const ui = await band
+  await clock.settle()
+  const drawn = (await ui.findAll({ type: 'Svg' })).map(s => String((s as unknown as { props: { source: string } }).props.source)).join('')
+  expect(drawn).toContain('<style>@media (prefers-color-scheme: dark){.t{fill:#e0def4}')
+  await (await pane).unmount()
   await ui.unmount()
 })

@@ -1,7 +1,9 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, HookFailure, Register, RenderElement } from 'claude-code'
 
 import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
+import type { ControlProps } from './controls'
+import type { MarkProps } from './mark'
 
 const flow = atom({ plugin: 'savvy-progress', key: 'flow' } as const, null)
 const agents = atom({ plugin: 'savvy-progress', key: 'agents' } as const, [])
@@ -37,6 +39,10 @@ type ProgressInput = {
 // The Omarchy palette, when its file exists; render handlers copy the atom here and
 // the drawings read it, so a missing file (null) keeps every default colour.
 let pal: Palette | null = null
+// A light skin: the palette still colours the terminal rows and the accent, but its dark-only CSS is not drawn.
+let lightSkin = false
+let paletteStarted = 0
+let paletteApplied = 0
 let themePoll: { cancel(): void } | null = null
 let themeEvery = 0
 let clockTick: { cancel(): void } | null = null
@@ -45,20 +51,23 @@ let themePath = ''
 const accentOf = (): string => pal?.accent ?? ACCENT
 
 // Appended after the default styles (same specificity, later wins), in dark only: the
-// palette is a dark one and cards draw on the host's page, so a light host keeps the defaults.
+// palette is a dark one and cards draw on the host's page, so a light host (or skin) keeps the defaults.
 // Tile labels turn to the text colour: muted on the selection tile is too faint to read.
-const themeCss = (): string =>
-  pal
-    ? `<style>@media (prefers-color-scheme: dark){${[
-        pal.foreground && `.t{fill:${pal.foreground}}`,
-        pal.muted && `.s,.m,.tk{fill:${pal.muted}}`,
-        pal.foreground && `.tl{fill:${pal.foreground};fill-opacity:.7}`,
-        pal.selection && `.k{fill:${pal.selection}}.ln{stroke:${pal.selection}}`,
-        pal.red && `.r{fill:${pal.red}}`,
-        // Tiles take the theme's page colour: a quiet card, as the defaults draw it.
-        pal.background && `.rt,.tile{fill:${pal.background}}`,
-      ].join('')}}</style>`
-    : ''
+// Given the classes a drawing uses, only the rules that name one of them.
+const themeCss = (used?: Set<string>): string => {
+  if (!pal || lightSkin) return ''
+  const rules = [
+    pal.foreground && `.t{fill:${pal.foreground}}`,
+    pal.muted && `.s,.m,.tk{fill:${pal.muted}}`,
+    pal.foreground && `.tl{fill:${pal.foreground};fill-opacity:.7}`,
+    pal.selection && `.k{fill:${pal.selection}}`,
+    pal.selection && `.ln{stroke:${pal.selection}}`,
+    pal.red && `.r{fill:${pal.red}}`,
+    // Tiles take the theme's page colour: a quiet card, as the defaults draw it.
+    pal.background && `.rt,.tile{fill:${pal.background}}`,
+  ].filter((r): r is string => !!r && (!used || (r.split('{')[0] ?? '').split(',').some(sel => used.has(sel.slice(1)))))
+  return used && !rules.length ? '' : `<style>@media (prefers-color-scheme: dark){${rules.join('')}}</style>`
+}
 
 // Omarchy's keys, first found wins: dim text is `dark_foreground` (`muted` is a border
 // tone, too faint for text), tiles the dark background over the plain one.
@@ -71,6 +80,39 @@ const THEME_FALLBACK: Record<keyof Palette, string[]> = {
   background: ['dark_background', 'background'],
 }
 let themeMtime = 0
+
+// A ui.render hook that fails leaves the engine's own drawing, which names no cause; this line does.
+// Plain Box and Text data, so it cannot fail the way the drawing did and needs no `$`.
+const failedLine = (what: string, error: HookFailure): RenderElement => ({
+  type: 'Box',
+  props: { flexDirection: 'column' },
+  children: [{ type: 'Text', props: { dimColor: true }, children: [`savvy-progress could not draw this ${what}: ${error.kind}: ${oneLine(error.message).slice(0, 300)}`] }],
+})
+
+// The Pane's catch never answers next(e): beneath the Pane is only the engine's blank "has not
+// drawn in this pane". A re-entry (the Pane raised again beneath this hook's own frame) is no
+// fault to the engine, but the handler's `$` calls reject then, so it too draws the line.
+export const paneFailed = (_$: unknown, _e: unknown, next: { error: HookFailure }): RenderElement => failedLine('pane', next.error)
+
+// A dark skin's theme (while skins names one) wins over colors.toml. A light skin leaves the file's
+// palette alone, as a light host does with no skin: the accent and terminal colours are the user's own
+// choice and apply in either mode, and only the dark-mode CSS stays off. skins' `dim` is the text tone
+// this palette calls `muted`. Palette and flag change in one step, so a handler mid-draw never sees them apart.
+async function paletteOf($: EngineInterface): Promise<void> {
+  const mine = ++paletteStarted
+  const skin = await read($, { plugin: 'skins', key: 'theme' } as const)
+  const useFile = !skin || skin.mode === 'light'
+  const file = useFile ? await read($, theme) : null
+  // A read overtaken by a later one that has already applied is dropped.
+  if (mine < paletteApplied) return
+  paletteApplied = mine
+  lightSkin = skin?.mode === 'light'
+  if (useFile) pal = file
+  else {
+    const { accent, foreground, dim, red, selection, background } = skin
+    pal = { accent, foreground, muted: dim, red, selection, background }
+  }
+}
 
 // Re-arms the poll only when its cadence changes.
 const pollTheme = ($: EngineInterface, ms: number): void => {
@@ -150,6 +192,8 @@ const STRINGS = {
     background: 'Background',
     nextIn: (t: string) => `next in ${t}`,
     due: 'due',
+    moreRunning: (n: number) => `+${n} more running`,
+    moreEnded: (n: number) => `+${n} more ended`,
     stopFailed: (what: string, err: string) => `could not stop ${clip(what, 60)}: ${err}`,
     kinds: { shell: 'shell', monitor: 'monitor', cron: 'scheduled', wakeup: 'loop wakeup' },
   },
@@ -188,6 +232,8 @@ const STRINGS = {
     background: 'Фоновые',
     nextIn: (t: string) => `через ${t}`,
     due: 'пора',
+    moreRunning: (n: number) => `+${n} ещё работают`,
+    moreEnded: (n: number) => `+${n} ещё закончили`,
     stopFailed: (what: string, err: string) => `не удалось остановить ${clip(what, 60)}: ${err}`,
     kinds: { shell: 'команда', monitor: 'монитор', cron: 'по расписанию', wakeup: 'пробуждение цикла' },
   },
@@ -221,14 +267,16 @@ const blank = (): Flow => ({
   tasks: [],
 })
 
+// A call with no title carries on the flow it finds, finished or not: the delegate skill's close
+// (`done`, then `finished`) lands on a flow the agent labels already finished.
 const isNewFlow = (prev: Flow | null, input: ProgressInput): boolean =>
-  !prev || prev.isFinished || (input.title !== undefined && input.title.trim() !== prev.title)
+  !prev || (input.title !== undefined && (prev.isFinished || oneLine(input.title) !== prev.title))
 
 const cleanTasks = (tasks: ProgressInput['tasks']): PlannedTask[] | undefined =>
   tasks
-    ?.filter(t => t.title?.trim())
+    ?.filter(t => oneLine(t.title))
     .map(t => ({
-      title: (t.title ?? '').trim(),
+      title: oneLine(t.title),
       tier: (t.tier ?? '').replace(/^savvy-/, '').trim().toLowerCase(),
       after: (t.after ?? []).filter(n => Number.isInteger(n) && n > 0),
     }))
@@ -242,11 +290,11 @@ const merge = (prev: Flow | null, input: ProgressInput): Flow => {
   const phase = input.phase && PHASES.includes(input.phase) ? input.phase : base.phase
   return {
     ...base,
-    title: input.title?.trim() || base.title,
+    title: oneLine(input.title) || base.title,
     total,
     done,
     phase: input.finished ? 'close' : phase,
-    isFinished: input.finished === true,
+    isFinished: input.finished ?? base.isFinished,
     tasks,
   }
 }
@@ -268,9 +316,9 @@ const noise = (x: number, y: number): number => {
   return s - Math.floor(s)
 }
 
-// The whole row is one SVG: the desktop wraps sibling elements onto new lines,
-// so title, bar, percent and the crab live in one drawing; only the count and
-// the dismiss are Buttons beside it. The host gives a Button a margin-block of
+// The row is drawings at fixed pixel widths in a gapless row Box, so nothing wraps: title, bar
+// and percent are layers at one origin, the crab beside them; only the count and the dismiss
+// are Buttons. The host gives a Button a margin-block of
 // (band line − control)/2 and lays it from the row's top, so its centre is band line / 2:
 // the images are the band line's height (23, as skins' band) and draw on H / 2.
 const H = 23
@@ -301,15 +349,45 @@ const fitText = (s: string, size: number, maxW: number): string => {
   return out + '…'
 }
 
-const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
-  // The title takes what it needs, up to 40% of the row; the bar takes the rest.
+// A desktop Svg is an image, and a changed source is a new image whose animations start over.
+// So every looping drawing has a source of slow state only (size, colour, costume, status),
+// never the time, tokens or progress: a redraw hands the host the same string and its image runs
+// on. What changes is drawn beside or over it. Kept by their inputs; the oldest go past 256.
+const drawings = new Map<string, string>()
+const constant = (key: string, draw: () => string): string => {
+  const k = `${key}|${themeCss()}`
+  let source = drawings.get(k)
+  if (source === undefined) {
+    source = draw()
+    drawings.set(k, source)
+    if (drawings.size > 256) drawings.delete(drawings.keys().next().value ?? '')
+  }
+  return source
+}
+
+// The band row is the bar's layers stacked at one origin, all W - CRAB_W wide, and the crab
+// beside them. The title takes what it needs, up to 40% of the row; the bar takes the rest.
+const barOf = (f: Flow, W: number) => {
   const title = fitText(f.title, 13, Math.max(60, W * 0.4))
-  const BAR_X = Math.round(16 + textWidth(title, 13) + 12)
-  const BAR_W = Math.max(60, W - BAR_X - 46 - CRAB_W)
+  const x = Math.round(16 + textWidth(title, 13) + 12)
+  return { title, x, w: Math.max(60, W - x - 46 - CRAB_W), y: (H - BAR_H) / 2 }
+}
+
+const bandSvg = (W: number, body: string): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${W - CRAB_W}" height="${H}" viewBox="0 0 ${W - CRAB_W} ${H}">
+<style>
+.t{fill:#1f1f1f}.m{fill:#6b6b68}.k{fill:#e4e4e2}.tk{fill:#b4b4b0}
+@media (prefers-color-scheme: dark){.t{fill:#ececec}.m{fill:#9a9a9a}.k{fill:#2c2c2c}.tk{fill:#5a5a5a}}
+</style>${themeCss()}${body}</svg>`
+
+const barClip = (w: number): string => `<defs><clipPath id="c"><rect x="0" y="0" width="${w}" height="${BAR_H}" rx="${BAR_H / 2}"/></clipPath></defs>`
+
+// Bottom layer: the dot, the title, the track and its dithered fill, the percent.
+const bandBaseSvg = (f: Flow, W: number): string => {
+  const bar = barOf(f, W)
   const color = f.isFinished ? DONE : accentOf()
-  const y0 = (H - BAR_H) / 2
-  const fillW = Math.round(BAR_W * ratio(f))
-  const runW = f.total ? Math.round((BAR_W * Math.min(f.total, f.done + f.running)) / f.total) : 0
+  const fillW = Math.round(bar.w * ratio(f))
+  const runW = f.total ? Math.round((bar.w * Math.min(f.total, f.done + f.running)) / f.total) : 0
   const dots: string[] = []
 
   // Dithered fill: sparse at the start, dense toward the head.
@@ -318,56 +396,100 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
   for (let c = 0; c < cols; c++) {
     const density = 0.35 + 0.6 * Math.pow(c / Math.max(1, cols), 1.2)
     for (let r = 0; r < rows; r++) {
-      if (noise(c, r) < density) dots.push(`<rect class="t${Math.floor(noise(r, c) * 4)}" x="${c * CELL + 1}" y="${r * CELL + 1}" width="2" height="2"/>`)
+      if (noise(c, r) < density) dots.push(`<rect x="${c * CELL + 1}" y="${r * CELL + 1}" width="2" height="2"/>`)
     }
   }
   // Handed to workers, not yet accepted: a faint second layer.
   const faint: string[] = []
   for (let c = cols; c < Math.floor(runW / CELL); c++) {
     for (let r = 0; r < rows; r++) {
-      if (noise(c + 7, r + 3) < 0.2) faint.push(`<rect class="t${Math.floor(noise(r + 5, c) * 4)}" x="${c * CELL + 1}" y="${r * CELL + 1}" width="1.7" height="1.7"/>`)
+      if (noise(c + 7, r + 3) < 0.2) faint.push(`<rect x="${c * CELL + 1}" y="${r * CELL + 1}" width="1.7" height="1.7"/>`)
     }
   }
-
-  const ticks: string[] = []
-  for (let i = 1; i < f.total; i++) {
-    const x = Math.round((BAR_W * i) / f.total)
-    if (x > fillW + 4) ticks.push(`<rect x="${x}" y="${BAR_H / 2 - 4}" width="1.5" height="8" rx="0.75"/>`)
-  }
-
-  const text = label(f)
-  const bandPillW = Math.round(18 + text.length * 6.6)
-  const pillX = Math.max(0, Math.min(BAR_W - bandPillW, fillW - bandPillW))
-  const percent = `${Math.round(ratio(f) * 100)}%`
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
-<style>
-.t{fill:#1f1f1f}.m{fill:#6b6b68}.k{fill:#e4e4e2}.tk{fill:#b4b4b0}
-@media (prefers-color-scheme: dark){.t{fill:#ececec}.m{fill:#9a9a9a}.k{fill:#2c2c2c}.tk{fill:#5a5a5a}}
-</style>${themeCss()}<style>
-/* Pixels twinkle in four out-of-phase groups; a finished bar settles to a slow glow. */
-.t0,.t1,.t2,.t3{animation:tw ${f.isFinished ? 3.2 : 2.2}s ease-in-out infinite}
-.t1{animation-duration:${f.isFinished ? 3.8 : 2.8}s;animation-delay:-.7s}.t2{animation-duration:${f.isFinished ? 4.4 : 1.9}s;animation-delay:-1.3s}.t3{animation-duration:${f.isFinished ? 3.5 : 3.3}s;animation-delay:-.4s}
-@keyframes tw{0%,100%{opacity:1}50%{opacity:${f.isFinished ? 0.8 : 0.3}}}
-@media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3{animation:none}}
-</style>
-<defs><clipPath id="c"><rect x="0" y="0" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}"/></clipPath></defs>
+  return bandSvg(
+    W,
+    `${barClip(bar.w)}
 <circle cx="5" cy="${H / 2}" r="4" fill="${color}"/>
-<text class="t" x="16" y="${H / 2 + 4.5}" font-family="${FONT}" font-size="13" font-weight="500">${xml(title)}</text>
-<g transform="translate(${BAR_X},${y0})">
-<rect class="k" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}"/>
+<text class="t" x="16" y="${H / 2 + 4.5}" font-family="${FONT}" font-size="13" font-weight="500">${xml(bar.title)}</text>
+<g transform="translate(${bar.x},${bar.y})">
+<rect class="k" width="${bar.w}" height="${BAR_H}" rx="${BAR_H / 2}"/>
 <g clip-path="url(#c)">
 <g fill="${color}">${dots.join('')}</g>
 <g fill="${color}" opacity="0.45">${faint.join('')}</g>
-<g class="tk">${ticks.join('')}</g>
 </g>
+</g>
+<text class="m" x="${W - CRAB_W - 6}" y="${H / 2 + 4.5}" text-anchor="end" font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${Math.round(ratio(f) * 100)}%</text>`,
+  )
+}
+
+// Middle layer, animated: the twinkle is a veil, not the dots. A track-coloured cell over every
+// place a dot can be fades in and out, so a dot under it dims as if its own opacity fell
+// (to .3, a finished bar's slow glow to .8), and over the bare track it shows nothing.
+// So it knows nothing of the fill. Four out-of-phase groups. A cell covers whole device pixels,
+// every one its dot touches (the bar sits on a half pixel): a veil over part of a pixel dims
+// less. Only pixels wholly on the track: a veil over the rounded ends' edge would darken the page.
+const bandTwinkleSvg = (f: Flow, W: number): string => {
+  const bar = barOf(f, W)
+  const R = BAR_H / 2
+  const onTrack = (x: number, y: number): boolean => {
+    const dx = x < R ? R - x : x > bar.w - R ? x - bar.w + R : 0
+    return dx * dx + (y - R) * (y - R) <= R * R
+  }
+  const isOn = (x0: number, y0: number, x1: number, y1: number): boolean => [x0, x1].every(x => onTrack(x, y0) && onTrack(x, y1))
+  return constant(`twinkle|${W}|${bar.x}|${bar.w}|${f.isFinished}`, () => {
+    const cells: string[][] = [[], [], [], []]
+    for (let c = 0; c < Math.floor(bar.w / CELL); c++) {
+      for (let r = 0; r < Math.floor(BAR_H / CELL); r++) {
+        const [x0, x1] = [c * CELL + 1, c * CELL + 3]
+        const y0 = Math.floor(bar.y + r * CELL + 1) - bar.y
+        const y1 = Math.ceil(bar.y + r * CELL + 3) - bar.y
+        const group = cells[Math.floor(noise(r, c) * 4)]
+        if (isOn(x0, y0, x1, y1)) group?.push(`M${x0} ${y0}h2v${y1 - y0}h-2z`)
+        else
+          for (let x = x0; x < x1; x++) for (let y = y0; y < y1; y++) if (isOn(x, y, x + 1, y + 1)) group?.push(`M${x} ${y}h1v1h-1z`)
+      }
+    }
+    const period = f.isFinished ? [3.2, 3.8, 4.4, 3.5] : [2.2, 2.8, 1.9, 3.3]
+    return bandSvg(
+      W,
+      `<style>
+.t0,.t1,.t2,.t3{opacity:0}
+${['', ' -.7s', ' -1.3s', ' -.4s'].map((delay, k) => `.t${k}{animation:tw ${period[k]}s ease-in-out infinite${delay}}`).join('')}
+@keyframes tw{0%,100%{opacity:0}50%{opacity:${f.isFinished ? 0.2 : 0.7}}}
+@media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3{animation:none}}
+</style>
+<g transform="translate(${bar.x},${bar.y})">${cells.map((d, k) => `<path class="k t${k}" d="${d.join('')}"/>`).join('')}</g>`,
+    )
+  })
+}
+
+// Top layer, over the twinkle: the task ticks and the pill with the phase.
+const bandTopSvg = (f: Flow, W: number): string => {
+  const bar = barOf(f, W)
+  const color = f.isFinished ? DONE : accentOf()
+  const fillW = Math.round(bar.w * ratio(f))
+  const ticks: string[] = []
+  for (let i = 1; i < f.total; i++) {
+    const x = Math.round((bar.w * i) / f.total)
+    if (x > fillW + 4) ticks.push(`<rect x="${x}" y="${BAR_H / 2 - 4}" width="1.5" height="8" rx="0.75"/>`)
+  }
+  const text = label(f)
+  const bandPillW = Math.round(18 + text.length * 6.6)
+  const pillX = Math.max(0, Math.min(bar.w - bandPillW, fillW - bandPillW))
+  return bandSvg(
+    W,
+    `${barClip(bar.w)}
+<g transform="translate(${bar.x},${bar.y})">
+<g clip-path="url(#c)"><g class="tk">${ticks.join('')}</g></g>
 <rect x="${pillX}" width="${bandPillW}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${color}"/>
 <text x="${pillX + bandPillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${f.isFinished ? '#0f2a1c' : '#1f1e1d'}">${xml(text)}</text>
-</g>
-<text class="m" x="${W - CRAB_W - 6}" y="${H / 2 + 4.5}" text-anchor="end" font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${percent}</text>
-${CRAB_CSS}${crab(W - CRAB_W + 1, crabTop('other', 0.8), 'other', false, isWorking, 0.8)}
-</svg>`
+</g>`,
+  )
 }
+
+// The band's crab, beside the layers, walking while an agent runs.
+const bandCrabSvg = (isWorking: boolean): string =>
+  constant(`band-crab|${isWorking}`, () => `<svg xmlns="http://www.w3.org/2000/svg" width="${CRAB_W}" height="${H}" viewBox="0 0 ${CRAB_W} ${H}">${crabCss(isWorking ? ['other'] : [])}${crab(1, crabTop('other', 0.8), 'other', false, isWorking, 0.8)}</svg>`)
 
 const barText = (f: Flow, width: number): string => {
   const filled = Math.round(width * ratio(f))
@@ -396,7 +518,6 @@ const TIER_TEXT: Record<string, [string, string]> = {
   light: ['#177f5e', '#3fb88d'],
   other: ['#6e6d68', '#a3a29c'],
 }
-const tierCss = (i: 0 | 1): string => Object.entries(TIER_TEXT).map(([k, c]) => `.tc-${k}{fill:${c[i]}}`).join('')
 
 // Attention flag red: text >= 4.5:1 on both host backgrounds, and pill text on the fill.
 const RED = '#b3261e'
@@ -478,10 +599,42 @@ const elapsed = (a: { startedAt: number; endedAt?: number }, at: number): number
 
 type Planned = PlannedTask & { n: number }
 
+// The task an agent description belongs to: it equals the title or starts with it as a whole word.
+// Of several titles that fit, the longest wins, so "kit-pr2 review" is kit-pr2's and not kit's.
+const titleOf = (titles: string[], description: string): string | undefined => {
+  const d = norm(description)
+  return titles.map(norm).filter(t => d === t || d.startsWith(`${t} `)).sort((a, b) => b.length - a.length)[0]
+}
+
+// The delegate workflow's labels move the bar on their own: "<task> implement|review c1|fix c1|validate c1|merge",
+// "<repo> docs". Only labels that name a planned task move it; a coordinator call still overwrites.
+const STAGE: Record<string, Phase> = { implement: 'delegate', review: 'review', fix: 'review', validate: 'review', recheck: 'review', merge: 'close', docs: 'close' }
+const stageOf = (titles: string[], description: string): { task: string; word: string } | undefined => {
+  const task = titleOf(titles, description)
+  return task === undefined ? undefined : { task, word: norm(description).slice(task.length).trim().split(' ')[0] ?? '' }
+}
+const isDocs = (a: AgentRun): boolean => norm(a.description).split(' ').pop() === 'docs'
+
+// `run` is the agent that just spawned or ended. Phase only moves forward, done never drops.
+const autoFlow = (f: Flow | null, list: AgentRun[], run: AgentRun | undefined): Flow | null => {
+  if (!f || f.isFinished || !f.tasks?.length || !run) return f
+  const titles = f.tasks.map(t => t.title)
+  if (run.status === 'running') {
+    const phase = STAGE[stageOf(titles, run.description)?.word ?? '']
+    return phase && PHASES.indexOf(phase) > PHASES.indexOf(f.phase) ? { ...f, phase } : f
+  }
+  const merged = new Set(list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s?.word === 'merge').map(s => s?.task))
+  const done = Math.max(f.done, Math.min(f.total, merged.size))
+  const isFinished =
+    done > 0 && done === f.total && isDocs(run) && run.status === 'done' && !list.some(a => a.status === 'running' && (isDocs(a) || titleOf(titles, a.description) !== undefined))
+  return done === f.done && !isFinished ? f : { ...f, done, ...(isFinished ? { isFinished, phase: 'close' as const } : {}) }
+}
+
 const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
   if (!f || f.isFinished) return []
-  const started = new Set(list.map(a => norm(a.description)))
-  return (f.tasks ?? []).map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
+  const tasks = f.tasks ?? []
+  const started = new Set(list.map(a => titleOf(tasks.map(t => t.title), a.description)))
+  return tasks.map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
 }
 
 const totals = (list: AgentRun[], at: number) => {
@@ -492,14 +645,33 @@ const totals = (list: AgentRun[], at: number) => {
   return { cost, tokens, time: list.length ? end - start : 0 }
 }
 
-// --- desktop drawings: each row is one SVG, as the band above the prompt is.
+// --- desktop drawings: each row is a few SVGs side by side, as the band above the prompt is.
 
-const PANE_CSS = `<style>
-.t{fill:#1f1f1f}.s{fill:#6b6b68}.m{fill:#73736f}.k{fill:#ecebe8}.ln{stroke:#e4e4e1}.tile{fill:#f4f3f0}.r{fill:${RED}}.rt{fill:#ffffff}${tierCss(0)}
-@media (prefers-color-scheme: dark){.t{fill:#ececec}.s{fill:#a8a8a4}.m{fill:#9d9d98}.k{fill:#2c2c2b}.ln{stroke:#333331}.tile{fill:#262625}.r{fill:#ff8a80}.rt{fill:#1f1e1d}${tierCss(1)}}
-.live{animation:p 1.6s ease-in-out infinite}@keyframes p{50%{opacity:.3}}
-@media (prefers-reduced-motion: reduce){.live{animation:none}}
-</style>`
+// Each pane class's light and dark rule. A drawing carries only the classes it uses: the host
+// counts every character of every drawing against the whole pane's bound.
+const PANE_TONES: [cls: string, light: string, dark: string][] = [
+  ['t', 'fill:#1f1f1f', 'fill:#ececec'],
+  ['s', 'fill:#6b6b68', 'fill:#a8a8a4'],
+  ['m', 'fill:#73736f', 'fill:#9d9d98'],
+  ['k', 'fill:#ecebe8', 'fill:#2c2c2b'],
+  ['ln', 'stroke:#e4e4e1', 'stroke:#333331'],
+  ['tile', 'fill:#f4f3f0', 'fill:#262625'],
+  ['r', `fill:${RED}`, 'fill:#ff8a80'],
+  ['rt', 'fill:#ffffff', 'fill:#1f1e1d'],
+  ...Object.entries(TIER_TEXT).map(([k, [light, dark]]): [string, string, string] => [`tc-${k}`, `fill:${light}`, `fill:${dark}`]),
+]
+const SPIN_CSS = '.spin{animation:spin 1.8s linear infinite}@keyframes spin{to{transform:rotate(1turn)}}@media (prefers-reduced-motion: reduce){.spin{animation:none!important}}'
+
+const classesOf = (body: string): Set<string> => new Set([...body.matchAll(/class="([^"]*)"/g)].flatMap(m => (m[1] ?? '').split(' ')))
+
+const paneCss = (used: Set<string>): string => {
+  const tones = PANE_TONES.filter(([cls]) => used.has(cls))
+  const rules = tones.length
+    ? `${tones.map(([cls, light]) => `.${cls}{${light}}`).join('')}@media (prefers-color-scheme: dark){${tones.map(([cls, , dark]) => `.${cls}{${dark}}`).join('')}}`
+    : ''
+  const css = `${rules}${used.has('spin') ? SPIN_CSS : ''}`
+  return css && `<style>${css}</style>`
+}
 
 // Pixel Clawd from DockCrab (Clawdy): a 24×18 crab on a 30×28 grid, one costume per tier.
 // The body keeps the brand clay; the tier's color lives in the costume's accent.
@@ -526,41 +698,45 @@ const crabBody = (f: Fill, armFront = 0, armCls?: string): void => {
   f(21, 22, 2, 4, CLAY, 'lb')
 }
 
-// Pure CSS, run by the compositor: no redraws. Periods divide one second, so the
-// once-a-second redraw of a running row restarts them in phase. Every crab walks;
-// each costume adds its prop's own motion on top.
-const CRAB_CSS = `<style>
-.run .la{animation:st .5s steps(1) infinite}.run .lb{animation:st .5s steps(1) infinite -.25s}
-.run .bd{animation:bob .5s steps(1) infinite -.125s}
-.run g{transform-box:fill-box}
-@keyframes st{50%{transform:translateY(-1px)}}@keyframes bob{50%{transform:translateY(1px)}}
-.c-fable.run{animation:float 1s ease-in-out infinite}
-.c-fable.run .la,.c-fable.run .lb,.c-fable.run .bd{animation:none}
-.c-fable.run .ant{animation:blink 1s steps(1) infinite}
-.c-fable.run .star{animation:blink .5s steps(1) infinite -.25s}
-@keyframes float{50%{transform:translateY(-2px)}}@keyframes blink{50%{opacity:.15}}
-.c-heavy.run .it{animation:scan 1s steps(1) infinite}
-.c-heavy.run .gl{animation:blink 1s steps(1) infinite -.5s}
-@keyframes scan{25%{transform:translate(-1px,1px)}50%{transform:translate(-2px,2px)}75%{transform:translate(-1px,1px)}}
-.c-careful.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite}
-@keyframes twist{50%{transform:rotate(-35deg)}}
-.c-medium.run .pan{transform-origin:0 50%;animation:tilt 1s ease-in-out infinite}
-.c-medium.run .egg{animation:flip 1s ease-in-out infinite}
-@keyframes tilt{20%,40%{transform:rotate(-12deg)}}@keyframes flip{30%{transform:translateY(-5px) scaleY(-1)}60%{transform:translateY(0)}}
-.c-light.run .la{animation-duration:.25s}.c-light.run .lb{animation-duration:.25s;animation-delay:-.125s}
-.c-light.run .flag{transform-origin:0 50%;animation:wave .25s steps(1) infinite}
-@keyframes wave{50%{transform:skewY(-12deg) scaleX(.85)}}
-.c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite}
-@keyframes fence{50%{transform:rotate(25deg)}}
-.c-implement.run .c1{animation:blink .5s steps(1) infinite}.c-implement.run .c2{animation:blink .5s steps(1) infinite -.25s}
-.c-review.run .chk{animation:blink 1s steps(1) infinite}.c-review.run .chk2{animation:blink 1s steps(1) infinite -.5s}
-.c-design.run .it{transform-origin:0 100%;animation:paint .5s ease-in-out infinite}
-@keyframes paint{50%{transform:rotate(-20deg)}}
-.c-test.run .bub{animation:blink .5s steps(1) infinite}.c-test.run .bub2{animation:blink .5s steps(1) infinite -.25s}
-@media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}
-</style>`
+// Pure CSS in an image, so each frame is drawn on the page's main thread; fixed offsets only, so
+// the source never changes. Every crab walks (the '' rules); each costume adds its prop's own
+// motion on top. A drawing takes the rules of the costumes that walk in it and the keyframes
+// those name; a crab standing still takes none.
+const CRAB_MOTION: Record<string, string> = {
+  '': '.run .la{animation:st .5s steps(1) infinite}.run .lb{animation:st .5s steps(1) infinite -.25s}.run .bd{animation:bob .5s steps(1) infinite -.125s}.run g{transform-box:fill-box}',
+  fable:
+    '.c-fable.run{animation:float 1s ease-in-out infinite}.c-fable.run .la,.c-fable.run .lb,.c-fable.run .bd{animation:none}.c-fable.run .ant{animation:blink 1s steps(1) infinite}.c-fable.run .star{animation:blink .5s steps(1) infinite -.25s}',
+  heavy: '.c-heavy.run .it{animation:scan 1s steps(1) infinite}.c-heavy.run .gl{animation:blink 1s steps(1) infinite -.5s}',
+  careful: '.c-careful.run .it{transform-origin:100% 100%;animation:twist .5s ease-in-out infinite}',
+  medium: '.c-medium.run .pan{transform-origin:0 50%;animation:tilt 1s ease-in-out infinite}.c-medium.run .egg{animation:flip 1s ease-in-out infinite}',
+  light: '.c-light.run .la{animation-duration:.25s}.c-light.run .lb{animation-duration:.25s;animation-delay:-.125s}.c-light.run .flag{transform-origin:0 50%;animation:wave .25s steps(1) infinite}',
+  explore: '.c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite}',
+  implement: '.c-implement.run .c1{animation:blink .5s steps(1) infinite}.c-implement.run .c2{animation:blink .5s steps(1) infinite -.25s}',
+  review: '.c-review.run .chk{animation:blink 1s steps(1) infinite}.c-review.run .chk2{animation:blink 1s steps(1) infinite -.5s}',
+  design: '.c-design.run .it{transform-origin:0 100%;animation:paint .5s ease-in-out infinite}',
+  test: '.c-test.run .bub{animation:blink .5s steps(1) infinite}.c-test.run .bub2{animation:blink .5s steps(1) infinite -.25s}',
+}
+const CRAB_KEYFRAMES: Record<string, string> = {
+  st: '50%{transform:translateY(-1px)}',
+  bob: '50%{transform:translateY(1px)}',
+  float: '50%{transform:translateY(-2px)}',
+  blink: '50%{opacity:.15}',
+  scan: '25%{transform:translate(-1px,1px)}50%{transform:translate(-2px,2px)}75%{transform:translate(-1px,1px)}',
+  twist: '50%{transform:rotate(-35deg)}',
+  tilt: '20%,40%{transform:rotate(-12deg)}',
+  flip: '30%{transform:translateY(-5px) scaleY(-1)}60%{transform:translateY(0)}',
+  wave: '50%{transform:skewY(-12deg) scaleX(.85)}',
+  fence: '50%{transform:rotate(25deg)}',
+  paint: '50%{transform:rotate(-20deg)}',
+}
+const crabCss = (walking: string[]): string => {
+  if (!walking.length) return ''
+  const rules = ['', ...new Set(walking)].map(c => CRAB_MOTION[c] ?? '').join('')
+  const frames = [...new Set([...rules.matchAll(/animation:(\w+)/g)].map(m => m[1] ?? ''))].filter(n => n in CRAB_KEYFRAMES)
+  return `<style>${rules}${frames.map(n => `@keyframes ${n}{${CRAB_KEYFRAMES[n]}}`).join('')}@media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}</style>`
+}
 
-const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
+export const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
   // Fable: astronaut in a glass dome; floats instead of walking, the antenna and the star blink.
   fable: (f, t) => {
     crabBody(f)
@@ -655,19 +831,48 @@ const costumeOf = (a: { type: string; description?: string }): string =>
 
 const CRAB_SCALE = 1.1
 
+// A group's pixels of one colour are one path, painted in the order each colour first appears:
+// a row's run of pixels is a rectangle, grown down while the next row repeats it.
+const pixelPath = (rows: Map<number, Set<number>>): string => {
+  const rects: [x: number, y: number, w: number, h: number][] = []
+  let open = new Map<string, (typeof rects)[number]>()
+  for (const y of [...rows.keys()].sort((a, b) => a - b)) {
+    const xs = [...(rows.get(y) ?? [])].sort((a, b) => a - b)
+    const next = new Map<string, (typeof rects)[number]>()
+    for (let i = 0, j = 0; i < xs.length; i = ++j) {
+      while (xs[j + 1] === (xs[j] ?? 0) + 1) j++
+      const x = xs[i] ?? 0
+      const w = j - i + 1
+      const key = `${x},${w}`
+      const r = open.get(key)
+      if (r && r[1] + r[3] === y) {
+        r[3]++
+        open.delete(key)
+        next.set(key, r)
+      } else next.set(key, [x, y, w, 1])
+    }
+    rects.push(...open.values())
+    open = next
+  }
+  rects.push(...open.values())
+  return rects.map(([x, y, w, h]) => `M${x} ${y}h${w}v${h}h-${w}z`).join('')
+}
+
 // Body and props nest inside `bd` so a prop rides the bob and adds its own motion;
 // legs stay outside it and step on their own.
-const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = CRAB_SCALE, tint = colorOf(costume)): string => {
-  const groups = new Map<string, string[]>([['bd', []]])
+export const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = CRAB_SCALE, tint = colorOf(costume)): string => {
+  const groups = new Map<string, Map<string, Map<number, Set<number>>>>([['bd', new Map()]])
+  const at = <K, V>(m: Map<K, V>, k: K, make: () => V): V => m.get(k) ?? (m.set(k, make()), m.get(k) as V)
   const f: Fill = (cx, cy, w, h, c, cls = 'bd') => {
-    if (!groups.has(cls)) groups.set(cls, [])
-    groups.get(cls)?.push(`<rect x="${cx}" y="${cy}" width="${w}" height="${h}" fill="${c}"/>`)
+    const rows = at(at(groups, cls, () => new Map()), c, () => new Map())
+    for (let py = cy; py < cy + h; py++) for (let px = cx; px < cx + w; px++) at(rows, py, () => new Set()).add(px)
   }
   const draw = COSTUMES[costume] ?? ((g: Fill) => crabBody(g))
   draw(f, tint)
-  const group = (cls: string) => `<g class="${cls}">${(groups.get(cls) ?? []).join('')}</g>`
+  const paths = (cls: string) => [...(groups.get(cls) ?? [])].map(([c, rows]) => `<path d="${pixelPath(rows)}" fill="${c}"/>`).join('')
+  const group = (cls: string) => `<g class="${cls}">${paths(cls)}</g>`
   const props = [...groups.keys()].filter(k => k !== 'bd' && k !== 'la' && k !== 'lb')
-  const body = `<g class="bd">${(groups.get('bd') ?? []).join('')}${props.map(group).join('')}</g>`
+  const body = `<g class="bd">${paths('bd')}${props.map(group).join('')}</g>`
   return `<g transform="translate(${x},${y}) scale(${scale})" opacity="${dim ? 0.45 : 1}" shape-rendering="crispEdges"><g class="c-${costume}${isWalking ? ' run' : ''}">${body}${group('la')}${group('lb')}</g></g>`
 }
 
@@ -679,15 +884,44 @@ const crabTop = (costume: string, scale: number): number => {
   return H / 2 - (scale * (top + bottom)) / 2
 }
 
-const statusMark = (x: number, y: number, status: string, color: string): string => {
-  if (status === 'running') return `<circle class="live" cx="${x}" cy="${y}" r="3.5" fill="${color}"/>`
+// A running mark is a 33⅓ platter: a faint ring, a marker and its trail turning once per 1.8s,
+// a fixed spindle. Each run's phase comes from its id, fixed for its life, so platters never
+// turn in step.
+const phaseOf = (id: string): string => {
+  const hash = [...id].reduce((h, ch) => Math.imul(h ^ ch.charCodeAt(0), 16777619), 2166136261) >>> 0
+  return `-${(((hash % 1000) / 1000) * 1.8).toFixed(3)}s`
+}
+
+const platter = (x: number, y: number, r: number, color: string, id: string): string =>
+  `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g class="spin" style="transform-origin:${x}px ${y}px;animation-delay:${phaseOf(id)}"><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
+
+const statusMark = (x: number, y: number, status: string, color: string, id = ''): string => {
+  if (status === 'running') return platter(x, y, 4.59, color, id)
   if (status === 'done') return `<path d="M${x - 5} ${y}l3.5 3.5 6.5-7" fill="none" stroke="#3B9C5F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
   if (status === 'failed') return `<path d="M${x - 4} ${y - 4}l8 8M${x + 4} ${y - 4}l-8 8" stroke="#D0453F" stroke-width="1.8" stroke-linecap="round"/>`
   return `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="#9a9a96" stroke-width="1.4"/><path d="M${x} ${y - 2.5}v2.8l1.8 1.2" fill="none" stroke="#9a9a96" stroke-width="1.4" stroke-linecap="round"/>`
 }
 
-const svg = (W: number, H: number, body: string): string =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${PANE_CSS}${themeCss()}${CRAB_CSS}${body}</svg>`
+const svg = (W: number, H: number, body: string): string => {
+  const used = classesOf(body)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${paneCss(used)}${themeCss(used)}${body}</svg>`
+}
+
+// A card or a background row is three drawings in a row: the crab column (a background row
+// has none), the data, and the status mark column; the crab and the mark are constant and draw
+// their stretch of the row's bottom line.
+const CARD_CRAB_W = 42
+const MARK_W = 16
+const rowLine = (W: number, h: number): string => `<line class="ln" x1="0" y1="${h - 0.5}" x2="${W}" y2="${h - 0.5}"/>`
+
+const crabColumnSvg = (a: AgentRun, h: number, isWalking: boolean): string => {
+  const costume = costumeOf(a)
+  const tint = colorOf(tierOf(a.type))
+  return constant(`crab|${costume}|${tint}|${isWalking}|${h}`, () => svg(CARD_CRAB_W, h, `${crabCss(isWalking ? [costume] : [])}${crab(0, 14, costume, false, isWalking, CRAB_SCALE, tint)}\n${rowLine(CARD_CRAB_W, h)}`))
+}
+
+const markColumnSvg = (h: number, y: number, status: string, color: string, id: string): string =>
+  constant(`mark|${h}|${y}|${status}|${color}|${status === 'running' ? id : ''}`, () => svg(MARK_W, h, `${statusMark(MARK_W / 2, y, status, color, id)}\n${rowLine(MARK_W, h)}`))
 
 // The pane's own title already says "Agents": the header names the flow, if any.
 const headerSvg = (W: number, title: string, t: ReturnType<typeof totals>): string => {
@@ -734,6 +968,7 @@ const agentHeight = (a: AgentRun): number => (a.blocked ? 82 : 66)
 
 const ctxOf = (a: AgentRun): number => (a.contextMax ? Math.min(100, Math.round((a.contextTokens / a.contextMax) * 100)) : 0)
 
+// The card's data, between its crab and its mark: W is the whole card's width.
 const agentSvg = (W: number, a: AgentRun, at: number): string => {
   const s = tr()
   const tier = tierOf(a.type)
@@ -754,18 +989,17 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
   const flag = needsAttention(a) ? flagOf(a) : ''
   const title = fitText(a.description || a.type, 13, textW - (flag ? pillW(flag) + 8 : 0))
   const h = agentHeight(a)
+  const DW = W - CARD_CRAB_W - MARK_W
   return svg(
-    W,
+    DW,
     h,
-    `${crab(0, 14, costumeOf(a), false, a.status === 'running', CRAB_SCALE, color)}
-<text class="t" x="42" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${flag ? pill(Math.round(42 + textWidth(title, 13) + 8), 6, flag) : ''}
-<text x="42" y="34" font-family="${FONT}" font-size="11"><tspan class="tc-${tier}">${xml(tier === 'other' ? a.type : tier)}</tspan><tspan class="s">  ${xml(meta.join('  ·  '))}</tspan></text>
-${steps && stepsW > 30 ? `<text class="t" x="42" y="49" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(fitText(steps, 11, stepsW))}</text>` : ''}
-<text class="s" x="${42 + barW}" y="49" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${stats}</text>
-<rect class="k" x="42" y="55" width="${barW}" height="4" rx="2"/><rect${progress === null ? ' class="m"' : ''} x="42" y="55" width="${fillW}" height="4" rx="2"${progress === null ? '' : ` fill="${color}"`}/>
-${statusMark(W - 8, 16, a.status, color)}
-${a.blocked ? `<text class="r" x="42" y="75" font-family="${FONT}" font-size="11">${xml(fitText(`↳ ${a.blocked}`, 11, textW))}</text>` : ''}
-<line class="ln" x1="0" y1="${h - 0.5}" x2="${W}" y2="${h - 0.5}"/>`,
+    `<text class="t" x="0" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${flag ? pill(Math.round(textWidth(title, 13) + 8), 6, flag) : ''}
+<text x="0" y="34" font-family="${FONT}" font-size="11"><tspan class="tc-${tier}">${xml(tier === 'other' ? a.type : tier)}</tspan><tspan class="s">  ${xml(meta.join('  ·  '))}</tspan></text>
+${steps && stepsW > 30 ? `<text class="t" x="0" y="49" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(fitText(steps, 11, stepsW))}</text>` : ''}
+<text class="s" x="${barW}" y="49" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${stats}</text>
+<rect class="k" x="0" y="55" width="${barW}" height="4" rx="2"/><rect${progress === null ? ' class="m"' : ''} x="0" y="55" width="${fillW}" height="4" rx="2"${progress === null ? '' : ` fill="${color}"`}/>
+${a.blocked ? `<text class="r" x="0" y="75" font-family="${FONT}" font-size="11">${xml(fitText(`↳ ${a.blocked}`, 11, textW))}</text>` : ''}
+${rowLine(DW, h)}`,
   )
 }
 
@@ -800,30 +1034,43 @@ ${statusMark(W - 8, 16, 'planned', color)}
   )
 }
 
-const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnType<typeof totals>): string => {
+// Compact view: the crabs, each with its platter or cross, are one constant drawing, as wide as
+// they are plus the last platter's overhang; the count of the rest and the totals sit beside it.
+const compactIcons = (W: number, list: AgentRun[], planned: Planned[]) => {
   const icons = [
-    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false })),
-    ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false })),
-    ...planned.map(p => ({ k: p.tier in TIER_COLOR ? p.tier : 'other', c: colorOf(p.tier), s: 'planned', dim: true })),
+    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false, id: a.id, run: true })),
+    ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false, id: a.id, run: false })),
+    ...planned.map(p => ({ k: p.tier in TIER_COLOR ? p.tier : 'other', c: colorOf(p.tier), s: 'planned', dim: true, id: '', run: false })),
   ]
-  const fit = Math.max(1, Math.floor((W - 150) / 36))
-  const shown = icons.slice(0, fit)
-  const more = icons.length - shown.length
-  const body = shown
-    .map(
-      (ic, i) =>
-        crab(i * 36, 0, ic.k, ic.dim, ic.s === 'running', CRAB_SCALE, ic.c) +
-        (ic.s === 'running' ? `<circle class="live" cx="${i * 36 + 32}" cy="4" r="3" fill="${ic.c}"/>` : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
-    )
-    .join('')
-  const x = shown.length * 36 + (more ? 4 : 0)
-  return svg(
-    W,
-    32,
-    `${body}${more ? `<text class="s" x="${x}" y="21" font-family="${FONT}" font-size="12">+${more}</text>` : ''}
-<text class="s" x="${W}" y="21" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">≈${fmtCost(t.cost)} · ${fmtTokens(t.tokens)} · ${fmtTime(t.time)}</text>`,
+  const shown = icons.slice(0, Math.max(1, Math.floor((W - 150) / 36)))
+  return { shown, more: icons.length - shown.length, width: shown.length * 36 + 2 }
+}
+
+const compactIconsSvg = (shown: ReturnType<typeof compactIcons>['shown']): string => {
+  const W = shown.length * 36 + 2
+  return constant(`icons|${JSON.stringify(shown.map(ic => (ic.run ? ic : { ...ic, id: '' })))}`, () =>
+    svg(
+      W,
+      32,
+      crabCss(shown.filter(ic => ic.run).map(ic => ic.k)) +
+        shown
+          .map(
+            (ic, i) =>
+              crab(i * 36, 0, ic.k, ic.dim, ic.run, CRAB_SCALE, ic.c) +
+              (ic.s === 'running' ? platter(i * 36 + 32, 5.5, 3.94, ic.c, ic.id) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
+          )
+          .join(''),
+    ),
   )
 }
+
+const compactSvg = (W: number, more: number, t: ReturnType<typeof totals>): string =>
+  svg(
+    W,
+    32,
+    `${more ? `<text class="s" x="2" y="21" font-family="${FONT}" font-size="12">+${more}</text>` : ''}
+<text class="s" x="${W}" y="21" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">≈${fmtCost(t.cost)} · ${fmtTokens(t.tokens)} · ${fmtTime(t.time)}</text>`,
+  )
 
 // --- background work: shells and monitors that run, crons and wakeups that wait.
 
@@ -851,19 +1098,21 @@ const bgMeta = (t: BackgroundTask, at: number): string => {
 
 const bgMark = (t: BackgroundTask): string => (t.status === 'scheduled' ? 'planned' : t.status)
 
+// The row Box centres the image and the Stop button's margin box on one line, and the
+// button's margin-block is symmetric, so its centre is BG_H / 2: every mark draws there.
 const BG_H = 40
 
+// The row's data, beside its mark: W is the whole row's width.
 const bgSvg = (W: number, t: BackgroundTask, at: number): string => {
   const failed = t.status === 'failed' ? tr().isFailed : ''
   const title = fitText(bgTitle(t), 13, W - 42 - 22 - (failed ? pillW(failed) + 8 : 0))
   return svg(
-    W,
+    W - MARK_W,
     BG_H,
     `<text class="s" x="14" y="25" text-anchor="middle" font-family="${FONT}" font-size="16">${BG_ICON[t.kind]}</text>
 <text class="t" x="42" y="16" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${failed ? pill(Math.round(42 + textWidth(title, 13) + 8), 4, failed) : ''}
 <text class="s" x="42" y="32" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(bgMeta(t, at))}</text>
-${statusMark(W - 8, 16, bgMark(t), accentOf())}
-<line class="ln" x1="0" y1="${BG_H - 0.5}" x2="${W}" y2="${BG_H - 0.5}"/>`,
+${rowLine(W - MARK_W, BG_H)}`,
   )
 }
 
@@ -889,10 +1138,57 @@ async function repace($: EngineInterface): Promise<void> {
   clockTick = ms ? $.clock.every(ms, () => void $.clock.now().then(at => update($, now, () => at))) : null
 }
 
+// The desktop refuses a whole pane past 262144 characters of JSON and shows only "Nothing to
+// show yet"; the engine blanks every Client past 1e5 characters of text. Neither says so. So the
+// pane draws its items while both totals fit, with margin, and counts the rest on one line.
+const HOST_MAX = 200_000
+const ENGINE_MAX = 90_000
+const ENDED_MAX = 20
+
+// What the engine's text budget counts of a drawing: a Client's props, an Svg's alt, a key, a
+// label and every string; never an Svg's source.
+type Counted = { type?: string; props?: { key?: unknown; label?: unknown; alt?: unknown }; children?: unknown[] }
+export const engineChars = (n: unknown): number => {
+  if (typeof n === 'string') return n.length
+  if (!n || typeof n !== 'object') return 0
+  const e = n as Counted
+  if (e.type === 'Client') return JSON.stringify(e.props ?? null).length
+  if (e.type === 'Svg') return String(e.props?.alt ?? '').length
+  return String(e.props?.key ?? '').length + String(e.props?.label ?? '').length + (e.children ?? []).reduce((sum: number, c) => sum + engineChars(c), 0)
+}
+
+// One pane's running totals. `take` draws items in order while each fits; the first that does
+// not stops the rest, so what is drawn is always a prefix.
+const budgetOf = () => {
+  let host = 0
+  let engine = 0
+  const add = (el: unknown, isFixed = false): boolean => {
+    const h = JSON.stringify(el)?.length ?? 0
+    const g = engineChars(el)
+    if (!isFixed && (host + h > HOST_MAX || engine + g > ENGINE_MAX)) return false
+    host += h
+    engine += g
+    return true
+  }
+  const take = <T,>(items: T[], draw: (x: T) => RenderElement): RenderElement[] => {
+    const out: RenderElement[] = []
+    for (const x of items) {
+      const el = draw(x)
+      if (!add(el)) break
+      out.push(el)
+    }
+    return out
+  }
+  return { add, take }
+}
+
+// One entry per id, the last: two of one id draw one Client key twice, and the engine refuses the whole pane.
+const uniqById = <T extends { id: string }>(list: T[]): T[] => [...new Map(list.map(t => [t.id, t])).values()]
+
 // Writes the list only when it changed: every write redraws the pane.
 async function setBackground($: EngineInterface, change: (list: BackgroundTask[]) => BackgroundTask[]): Promise<void> {
   const prev = await read($, background)
-  if (JSON.stringify(change(prev)) !== JSON.stringify(prev)) await update($, background, list => change(list).slice(-100))
+  if (JSON.stringify(uniqById(change(prev))) !== JSON.stringify(prev)) await update($, background, list => uniqById(change(list)).slice(-100))
   await retick($)
 }
 
@@ -909,8 +1205,13 @@ async function finishTask($: EngineInterface, isIt: (t: BackgroundTask) => boole
 const isFinal = (status: string | undefined): status is string => !!status && !/^(running|pending|in_progress)$/i.test(status)
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
-// A command or description on one line.
-const oneLine = (v: unknown): string => str(v).replace(/\s+/g, ' ').trim()
+// A command or description on one line, without the control characters (an ESC from tool
+// output) the engine refuses in a Text or an Svg alt: one of them fails the whole drawing.
+const oneLine = (v: unknown): string =>
+  str(v)
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 
 // The engine clips a cron's prompt to 1000 chars and appends "… [+N chars]": true when
 // `listed` is `prompt`, whole or clipped.
@@ -924,7 +1225,7 @@ const startedTask = (e: Record<string, unknown>, r: Record<string, unknown>): Om
   if (e.tool === 'Bash' && str(r.backgroundTaskId)) return { id: str(r.backgroundTaskId), kind: 'shell', text: oneLine(e.command), status: 'running' }
   if (e.tool === 'Monitor' && str(r.taskId)) return { id: str(r.taskId), kind: 'monitor', text: oneLine(e.description) || oneLine(e.command), status: 'running' }
   if (e.tool === 'CronCreate' && str(r.id))
-    return { id: str(r.id), kind: 'cron', text: oneLine(e.prompt), status: 'scheduled', schedule: str(r.humanSchedule) || str(e.cron) }
+    return { id: str(r.id), kind: 'cron', text: oneLine(e.prompt), status: 'scheduled', schedule: oneLine(r.humanSchedule) || oneLine(e.cron) }
   // scheduledFor 0: the wakeup could not be armed.
   if (e.tool === 'ScheduleWakeup' && typeof r.scheduledFor === 'number' && r.scheduledFor > 0 && !r.stopped)
     return { id: `wake:${oneLine(e.prompt)}`, kind: 'wakeup', text: oneLine(e.reason) || oneLine(e.prompt), status: 'scheduled', nextAt: r.scheduledFor }
@@ -946,6 +1247,9 @@ async function stopTask($: EngineInterface, t: BackgroundTask): Promise<void> {
   await finishTask($, x => x.id === t.id, 'killed')
 }
 
+const toggleCollapsed = ($: EngineInterface) => update($, panel, prev => ({ ...prev, isDoneCollapsed: !prev.isDoneCollapsed }))
+const toggleCompactView = ($: EngineInterface) => update($, panel, prev => ({ ...prev, isCompact: !prev.isCompact }))
+
 // --- terminal drawing: the same rows in text.
 
 const ctxBar = (pct: number, width: number): string => {
@@ -953,7 +1257,11 @@ const ctxBar = (pct: number, width: number): string => {
   return '█'.repeat(filled) + '░'.repeat(Math.max(0, width - filled))
 }
 
-const STATUS_GLYPH: Record<string, string> = { running: '●', done: '✓', failed: '✗', planned: '◷' }
+const STATUS_GLYPH: Record<string, string> = { done: '✓', failed: '✗', planned: '◷' }
+// A running mark turns clockwise a half on each of the clock's ticks, a second or a minute
+// apart; the i-th row runs i steps ahead. Halves, so no frame is the planned glyph.
+const glyphOf = (status: string, at: number, i = 0): string =>
+  status === 'running' ? '◐◓◑◒'.charAt((Math.floor(at / (tickMs || 1000)) + i) % 4) : STATUS_GLYPH[status]
 
 // Opens the agents pane, or closes it when it is up; true when it ends up open.
 async function togglePane($: EngineInterface): Promise<boolean> {
@@ -996,7 +1304,7 @@ export const register: Register = (on, options) => {
           tasks: {
             type: 'array',
             description:
-              'The planned worker tasks in order, numbered from 1. Each title must equal the Agent tool `description` the task will be delegated with, so the panel can match runs to tasks.',
+              'The planned worker tasks in order, numbered from 1. Each title must equal the Agent tool `description` the task will be delegated with, or start it, so the panel can match runs to tasks.',
             items: {
               type: 'object',
               properties: {
@@ -1088,9 +1396,9 @@ export const register: Register = (on, options) => {
           ...a,
           stepTotal: total,
           stepDone,
-          stepNote: input.note?.trim() || undefined,
+          stepNote: oneLine(input.note) || undefined,
           failedAttempts: isProgress ? undefined : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
-          blocked: (typeof input.blocked === 'string' && input.blocked.trim()) || undefined,
+          blocked: oneLine(input.blocked) || undefined,
         }
         // Toast on crossings only: a new question, or the third failed attempt.
         if (run.blocked && run.blocked !== a.blocked) alerts.push(`${s.agent} ${run.description}: ${s.toastInput} — ${clip(run.blocked, 120)}`)
@@ -1175,7 +1483,7 @@ export const register: Register = (on, options) => {
             .map(t => ({ id: t.id, kind: t.type as 'shell' | 'monitor', text: oneLine(t.command) || oneLine(t.description), status: 'running' as const, startedAt: at })),
           ...crons
             .filter(c => !known.has(c.id) && !wakes.some(p => isClipOf(oneLine(c.prompt), p)))
-            .map(c => ({ id: c.id, kind: 'cron' as const, text: oneLine(c.prompt), status: 'scheduled' as const, startedAt: at, schedule: c.schedule })),
+            .map(c => ({ id: c.id, kind: 'cron' as const, text: oneLine(c.prompt), status: 'scheduled' as const, startedAt: at, schedule: oneLine(c.schedule) })),
         ]
         const isLive = (t: BackgroundTask) => ids.has(t.id) || (t.kind === 'wakeup' && isWakeOf(t.id))
         return [...list.map(t => (isActive(t) && !isLive(t) ? { ...t, status: 'done' as const, endedAt: at } : t)), ...missed]
@@ -1190,13 +1498,13 @@ export const register: Register = (on, options) => {
     if (started.deny !== undefined) return started
 
     const at = await $.clock.now()
-    await update($, agents, list => {
+    const spawned = await update($, agents, list => {
       const round = 1 + list.filter(a => norm(a.description) === norm(e.description) && e.description).length
       const run: AgentRun = {
         id: started.agentId ?? e.tool_use_id,
         agentId: started.agentId,
         type: e.subagentType,
-        description: e.description,
+        description: oneLine(e.description),
         model: started.model,
         status: 'running',
         startedAt: at,
@@ -1209,6 +1517,7 @@ export const register: Register = (on, options) => {
       }
       return [...list.filter(a => a.id !== run.id), run].slice(-200)
     })
+    await update($, flow, f => autoFlow(f, spawned, spawned.find(a => a.id === (started.agentId ?? e.tool_use_id))))
     await update($, now, () => at)
     await retick($)
     const f = await read($, flow)
@@ -1288,21 +1597,35 @@ export const register: Register = (on, options) => {
       )
       // The last running agent ended: fold the finished group once; a manual expand stays until the next run ends.
       if (wasRunning && !after.some(a => a.status === 'running')) await update($, panel, prev => ({ ...prev, isDoneCollapsed: true }))
+      if (wasRunning) await update($, flow, f => autoFlow(f, after, after.find(a => a.agentId === agentId)))
       await update($, now, () => at)
       await retick($)
     }
     return next(e)
   })
 
+  // A desktop control's click (controls.tsx), named by its Client's key.
+  on('ui.message', async ($, e, next) => {
+    if (e.requestId !== PANE || (e.data as { press?: unknown } | null)?.press !== true) return next(e)
+    if (e.element === 'done') await toggleCollapsed($)
+    else if (e.element === 'compact') await toggleCompactView($)
+    else if (e.element.startsWith('stop-')) {
+      const x = (await read($, background)).find(t => `stop-${t.id}` === e.element && isActive(t))
+      if (x) await stopTask($, x)
+    } else return next(e)
+    return {}
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const s = tr()
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
-    pal = await read($, theme)
-    const list = await read($, agents)
+    await paletteOf($)
+    // Deduped again here: a list written before the write sites deduped still draws.
+    const list = uniqById(await read($, agents))
     const f = await read($, flow)
     const p: Panel = await read($, panel)
-    const bg = await read($, background)
+    const bg = uniqById(await read($, background))
     const at = Math.max(await read($, now), ...list.map(a => a.startedAt), ...bg.map(t => t.startedAt), 0)
 
     const running = list.filter(a => a.status === 'running').reverse()
@@ -1314,20 +1637,21 @@ export const register: Register = (on, options) => {
     // The pane's title says "Agents"; inside, only the flow's own name.
     const title = f && !f.isFinished ? f.title : ''
 
+    const doneLabel = `${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length + bgEnded.length}`
     const toggleCompact = (
       <Button
         key="compact"
         label={p.isCompact ? '⊞' : '⊟'}
         plain
-        onPress={() => update($, panel, prev => ({ ...prev, isCompact: !prev.isCompact }))}
+        onPress={() => toggleCompactView($)}
       />
     )
     const toggleDone = (
       <Button
         key="done"
-        label={`${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length + bgEnded.length}`}
+        label={doneLabel}
         plain
-        onPress={() => update($, panel, prev => ({ ...prev, isDoneCollapsed: !prev.isDoneCollapsed }))}
+        onPress={() => toggleCollapsed($)}
       />
     )
     const isEmpty = list.length === 0 && planned.length === 0 && bg.length === 0
@@ -1337,25 +1661,57 @@ export const register: Register = (on, options) => {
     const summary = `≈${fmtCost(t.cost)}, ${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
 
     if (e.surface === 'desktop' && 'Svg' in ui) {
-      const { Svg } = ui
+      const { Svg, Client } = ui
+      // Pane Buttons' presses never land on the desktop: the controls are Clients, pressed by key.
+      const control = (key: string, props: ControlProps) => <Client key={key} module="./controls.tsx" props={props} />
+      const toggleCompact = control('compact', { label: p.isCompact ? '⊞' : '⊟' })
+      const toggleDone = control('done', { label: doneLabel })
+      const stopButton = (x: BackgroundTask) => control(`stop-${x.id}`, { label: '■', dim: true, hover: pal?.red ?? RED })
       const W = Math.max(240, Math.min(900, (e.props.bodyColumns || 40) * 8 - 8))
       const section = (key: string, text: string) => (
         <Text key={key} dimColor>
           {text}
         </Text>
       )
-      // The Stop button sits beside the drawing: the desktop would wrap anything inside it.
+      const statusWord = (status: string) => (status === 'running' ? s.isRunning : status === 'failed' ? s.isFailed : status === 'planned' ? s.isPlanned : s.isFinished)
+      // A looping drawing (see `constant`) is a Client (mark.tsx), kept across redraws by its run's key; a still one, an image.
+      const drawing = (key: string, isLooping: boolean, props: MarkProps) =>
+        isLooping ? <Client key={key} module="./mark.tsx" props={props} /> : <Svg key={key} {...props} />
+      const card = (a: AgentRun) => {
+        const cardH = agentHeight(a)
+        const isLooping = a.status === 'running'
+        return (
+          <Box key={a.id} flexDirection="row">
+            {drawing(`crab-${a.id}`, isLooping, { source: crabColumnSvg(a, cardH, isLooping), alt: s.agent, width: CARD_CRAB_W, height: cardH })}
+            <Svg source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W - CARD_CRAB_W - MARK_W} height={cardH} />
+            {drawing(`mark-${a.id}`, isLooping, { source: markColumnSvg(cardH, 16, a.status, colorOf(tierOf(a.type)), a.id), alt: statusWord(a.status), width: MARK_W, height: cardH })}
+          </Box>
+        )
+      }
+      // The Stop button sits beside the drawings: the desktop would wrap anything inside them.
       const bgCard = (x: BackgroundTask) => (
         <Box key={`bg-${x.id}`} flexDirection="row" alignItems="center" gap={1}>
-          <Svg source={bgSvg(W - 56, x, at)} alt={`${bgTitle(x)}: ${bgMeta(x, at)}${x.status === 'failed' ? `, ${s.isFailed}` : ''}`} width={W - 56} height={BG_H} />
+          <Box flexDirection="row">
+            <Svg source={bgSvg(W - 56, x, at)} alt={`${bgTitle(x)}: ${bgMeta(x, at)}${x.status === 'failed' ? `, ${s.isFailed}` : ''}`} width={W - 56 - MARK_W} height={BG_H} />
+            {drawing(`bgmark-${x.id}`, x.status === 'running', {
+              source: markColumnSvg(BG_H, BG_H / 2, bgMark(x), accentOf(), x.id),
+              alt: statusWord(bgMark(x)),
+              width: MARK_W,
+              height: BG_H,
+            })}
+          </Box>
           {isActive(x) ? stopButton(x) : null}
         </Box>
       )
 
       if (p.isCompact) {
+        const icons = compactIcons(W, list, planned)
         return (
           <Box flexDirection="column" gap={1}>
-            <Svg source={compactSvg(W, list, planned, t)} alt={`${list.length} ${s.agentsCount}, ${summary}`} width={W} height={32} />
+            <Box flexDirection="row">
+              <Client key="icons" module="./mark.tsx" props={{ source: compactIconsSvg(icons.shown), alt: `${list.length} ${s.agentsCount}`, width: icons.width, height: 32 } satisfies MarkProps} />
+              <Svg source={compactSvg(W - icons.width, icons.more, t)} alt={summary} width={W - icons.width} height={32} />
+            </Box>
             {flagged.map(a => (
               <Svg key={`flag-${a.id}`} source={flagSvg(W, a)} alt={agentAlt(a)} width={W} height={20} />
             ))}
@@ -1363,27 +1719,42 @@ export const register: Register = (on, options) => {
           </Box>
         )
       }
+      const header = <Svg source={headerSvg(W, title, t)} alt={title ? `${title}: ${summary}` : summary} width={W} height={headerHeight(title)} />
+      const plannedRows = planned.map(pl => (
+        <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
+      ))
+      const budget = budgetOf()
+      for (const el of [header, toggleCompact, toggleDone, ...plannedRows]) budget.add(el, true)
+      // Running cards first, then background work; once one does not fit, the rest are a count.
+      const runCards = budget.take(running, card)
+      const isRunCut = runCards.length < running.length
+      const bgRows = isRunCut ? [] : budget.take(bgActive, bgCard)
+      const moreRunning = running.length + bgActive.length - runCards.length - bgRows.length
+      // The newest ended items, agents and rows alike, drawn in the group's order: agents, then rows.
+      const endedAt = (x: { startedAt: number; endedAt?: number }) => x.endedAt ?? x.startedAt
+      const newest = new Set<AgentRun | BackgroundTask>([...finished, ...bgEnded].sort((a, b) => endedAt(b) - endedAt(a)).slice(0, ENDED_MAX))
+      const newestCards = p.isDoneCollapsed ? [] : finished.filter(a => newest.has(a))
+      const endCards = budget.take(newestCards, card)
+      const endRows = p.isDoneCollapsed || endCards.length < newestCards.length ? [] : budget.take(bgEnded.filter(x => newest.has(x)), bgCard)
+      const moreEnded = finished.length + bgEnded.length - endCards.length - endRows.length
+      const moreRun = section('more-run', s.moreRunning(moreRunning))
       return (
         <Box flexDirection="column">
-          <Svg source={headerSvg(W, title, t)} alt={title ? `${title}: ${summary}` : summary} width={W} height={headerHeight(title)} />
+          {header}
           {toggleCompact}
           {isEmpty && <Text dimColor>{s.empty}</Text>}
           {running.length > 0 && section('h-run', `${s.running} · ${running.length}`)}
-          {running.map(a => (
-            <Svg key={a.id} source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
-          ))}
-          {bgActive.length > 0 && section('h-bg', `${s.background} · ${bgActive.length}`)}
-          {bgActive.map(bgCard)}
-          {hasEnded && toggleDone}
-          {!p.isDoneCollapsed &&
-            finished.map(a => (
-              <Svg key={a.id} source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W} height={agentHeight(a)} />
-            ))}
-          {!p.isDoneCollapsed && bgEnded.map(bgCard)}
+          {runCards}
+          {isRunCut && moreRun}
           {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
-          {planned.map(pl => (
-            <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
-          ))}
+          {plannedRows}
+          {bgActive.length > 0 && !isRunCut && section('h-bg', `${s.background} · ${bgActive.length}`)}
+          {bgRows}
+          {!isRunCut && moreRunning > 0 && moreRun}
+          {hasEnded && toggleDone}
+          {endCards}
+          {endRows}
+          {!p.isDoneCollapsed && moreEnded > 0 && section('more-ended', s.moreEnded(moreEnded))}
         </Box>
       )
     }
@@ -1397,7 +1768,7 @@ export const register: Register = (on, options) => {
         {` ${flagOf(a)} `}
       </Text>
     )
-    const row = (a: AgentRun) => {
+    const row = (a: AgentRun, i: number) => {
       const tier = tierOf(a.type)
       const color = colorOf(tier)
       const ctx = ctxOf(a)
@@ -1412,7 +1783,7 @@ export const register: Register = (on, options) => {
               {a.description || a.type}
             </Text>
             {needsAttention(a) ? flagText(a) : null}
-            <Text color={a.status === 'failed' ? 'red' : a.status === 'done' ? 'green' : color}>{STATUS_GLYPH[a.status]}</Text>
+            <Text color={a.status === 'failed' ? 'red' : a.status === 'done' ? 'green' : color}>{glyphOf(a.status, at, i)}</Text>
           </Box>
           {a.blocked ? <Text wrap="truncate-end">{`  ↳ ${a.blocked}`}</Text> : null}
           <Text dimColor wrap="truncate-end">
@@ -1445,7 +1816,7 @@ export const register: Register = (on, options) => {
               {` ${s.isFailed} `}
             </Text>
           ) : null}
-          <Text color={x.status === 'failed' ? 'red' : x.status === 'done' ? 'green' : accentOf()}>{STATUS_GLYPH[bgMark(x)]}</Text>
+          <Text color={x.status === 'failed' ? 'red' : x.status === 'done' ? 'green' : accentOf()}>{glyphOf(bgMark(x), at)}</Text>
           {isActive(x) ? stopButton(x) : null}
         </Box>
         <Text dimColor wrap="truncate-end">
@@ -1469,9 +1840,9 @@ export const register: Register = (on, options) => {
         {p.isCompact ? (
           <Box flexDirection="column">
             <Text wrap="truncate-end">
-              {[...running, ...finished].map(a => (
+              {[...running, ...finished].map((a, i) => (
                 <Text key={a.id} color={colorOf(tierOf(a.type))}>
-                  {STATUS_GLYPH[a.status]}{' '}
+                  {glyphOf(a.status, at, i)}{' '}
                 </Text>
               ))}
               {planned.map(pl => (
@@ -1492,11 +1863,6 @@ export const register: Register = (on, options) => {
             {isEmpty && <Text dimColor>{s.empty}</Text>}
             {running.length > 0 && <Text dimColor>{s.running} · {running.length}</Text>}
             {running.map(row)}
-            {bgActive.length > 0 && <Text dimColor>{s.background} · {bgActive.length}</Text>}
-            {bgActive.map(bgRow)}
-            {hasEnded && toggleDone}
-            {!p.isDoneCollapsed && finished.map(row)}
-            {!p.isDoneCollapsed && bgEnded.map(bgRow)}
             {planned.length > 0 && <Text dimColor>{s.planned} · {planned.length}</Text>}
             {planned.map(pl => {
               const tier = pl.tier in TIER_COLOR ? pl.tier : 'other'
@@ -1513,14 +1879,19 @@ export const register: Register = (on, options) => {
                 </Box>
               )
             })}
+            {bgActive.length > 0 && <Text dimColor>{s.background} · {bgActive.length}</Text>}
+            {bgActive.map(bgRow)}
+            {hasEnded && toggleDone}
+            {!p.isDoneCollapsed && finished.map(row)}
+            {!p.isDoneCollapsed && bgEnded.map(bgRow)}
           </Box>
         )}
       </Box>
     )
-  })
+  }).catch(paneFailed)
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    pal = await read($, theme)
+    await paletteOf($)
     const f = await read($, flow)
     const list = await read($, agents)
     const flagged = list.filter(needsAttention).length
@@ -1571,13 +1942,28 @@ export const register: Register = (on, options) => {
 
     if (e.surface !== 'terminal' && 'Svg' in ui) {
       const { Svg } = ui
+      // A looping drawing is a mark Client where the surface has one (the desktop), else an image.
+      const Client = e.surface === 'desktop' && 'Client' in ui ? ui.Client : null
+      const loop = (key: string, props: MarkProps) => (Client ? <Client key={key} module="./mark.tsx" props={props} /> : <Svg key={key} {...props} />)
       // About 8 CSS px per reported column; the rest is the count, the dismiss
       // and their gaps. No floor above the slot: a row wider than it would wrap.
       const width = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 96 - (flagged ? pillW(chipText) + 8 : 0)))
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" alignItems="center" gap={1}>
-            <Svg source={rowSvg(f, width, isWorking)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width} height={H} />
+            {/* The bar's layers share one origin; the twinkle (constant, see `loop`) sits between the fill and the pill. */}
+            <Box flexDirection="row">
+              <Box>
+                <Svg source={bandBaseSvg(f, width)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width - CRAB_W} height={H} />
+                <Box position="absolute" top={0} left={0}>
+                  {loop('band-twinkle', { source: bandTwinkleSvg(f, width), alt: f.title, width: width - CRAB_W, height: H })}
+                </Box>
+                <Box position="absolute" top={0} left={0}>
+                  <Svg source={bandTopSvg(f, width)} alt={label(f)} width={width - CRAB_W} height={H} />
+                </Box>
+              </Box>
+              {loop('band-crab', { source: bandCrabSvg(isWorking), alt: tr().agent, width: CRAB_W, height: H })}
+            </Box>
             {chip}
             {crewButton}
             {dismiss}
@@ -1606,6 +1992,17 @@ export const register: Register = (on, options) => {
           {crewButton}
           {dismiss}
         </Box>
+        {theirs}
+      </Box>
+    )
+  }).catch(async ($, e, next) => {
+    if (next.error.kind === 're-entry') return next(e)
+    // Whether or not the hook had called next, next(e) is the bands beneath: they stay under the failure line.
+    const theirs = await next(e).catch(() => null)
+    const { Box } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        {failedLine('band', next.error)}
         {theirs}
       </Box>
     )

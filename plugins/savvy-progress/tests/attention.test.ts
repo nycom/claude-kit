@@ -227,3 +227,30 @@ test('a second session.start does not stack a second clock ticker', async ($, on
   await clock.advance(3_000)
   expect(ticks).toBe(3)
 })
+
+// The engine refuses a whole tree for one control character in a Text or an Svg alt.
+const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/
+test('control characters from a description, a question or a note never reach the drawing', async ($, on) => {
+  mock.clock(on)
+  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Ship\x1b[0m it', phase: 'delegate', done: 0, total: 2, tasks: [{ title: 'fix \x07tests', tier: 'sonnet' }] } as never)
+  await $.agent.spawn({ tool_use_id: 't1', prompt: '', description: 'fix \x1b[31mred\x1b[0m bug\x07', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+  await $.tool.call({ tool: STEP, done: 1, total: 3, note: 'step \x1b one', blocked: 'Postgres\x07 or \x1bSQLite?', agentId: 'w1' } as never)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    for (const component of ['Pane', 'AbovePrompt'] as const) {
+      const ui = await $.ui.mount({ plugin: 'savvy-progress', surface, component, requestId: component === 'Pane' ? 'savvy-agents' : undefined, props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+      await ui.drawn()
+      const all = await ui.findAll({})
+      await ui.unmount()
+      const strings = all.flatMap(n => {
+        const p = n.props as { alt?: string; props?: { alt?: string } }
+        return [n.text, p.alt, p.props?.alt].filter((s): s is string => typeof s === 'string')
+      })
+      expect(strings.join('|')).toContain(component === 'Pane' ? 'fix [31mred[0m bug' : 'Ship[0m it')
+      expect(strings.filter(s => CONTROL.test(s))).toEqual([])
+    }
+  }
+})

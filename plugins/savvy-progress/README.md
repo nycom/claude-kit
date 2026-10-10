@@ -3,7 +3,8 @@
 A Claude Code mod: a progress bar above the prompt and a live panel of subagents. Made for the [savvy-flow](../savvy-flow) skill, and useful with any subagents.
 
 - **Progress bar**: the flow's title, phase, accepted tasks out of planned, and a button with the crew size that opens the panel. It appears once something reports progress (savvy-flow does) or a `savvy-*` worker starts.
-- **Agents panel** (`/agents-info` toggles it): running, ended and planned subagents with model, effort, task progress, context, estimated cost and time. Working crabs walk, and each savvy tier animates its prop: the astronaut floats, the detective sweeps the magnifier, the engineer turns the wrench, the chef tosses the omelette, the racer runs with a fluttering flag. A worker with a role wears it instead, read from its type's name, then its task: the reviewer ticks a clipboard behind round glasses, the tester's test tube bubbles, the designer paints in a beret, the implementer types at a laptop in a beanie; the card keeps its tier's colour. Explore is always the pirate. `prefers-reduced-motion` stops them.
+- **Auto-progress**: during a workflow run, agents whose label starts with a planned task's title (the longest matching title wins) move the bar on their own, by the label's next word: `implement` to delegate; `review`, `fix`, `validate` and `recheck` to review; `merge` and `docs` to close. The delegate skill's labels fit: "<task> implement", "<task> review c1", "<task> merge", "<repo> docs". Each "<task> merge" that ends with an answer counts that task done (the agent's turn is all the bar sees, so a merge that answered with a conflict still counts until the coordinator's `progress` `done` corrects it). The last "… docs" agent to answer, once every task has merged and no task or docs agent is still running, finishes the flow; a docs agent that failed does not. Phase never goes back and `done` never drops. A `progress` call still overwrites, and one without a title carries on the current flow even after the labels finished it, so the skill's closing `done` and `finished` calls land on it; a new title starts a new flow.
+- **Agents panel** (`/agents-info` toggles it): running, ended and planned subagents with model, effort, task progress, context, estimated cost and time. Working crabs walk, and each savvy tier animates its prop: the astronaut floats, the detective sweeps the magnifier, the engineer turns the wrench, the chef tosses the omelette, the racer runs with a fluttering flag. A worker with a role wears it instead, read from its type's name, then its task: the reviewer ticks a clipboard behind round glasses, the tester's test tube bubbles, the designer paints in a beret, the implementer types at a laptop in a beanie; the card keeps its tier's colour. Explore is always the pirate. `prefers-reduced-motion` stops them. A running agent or background task also carries a status mark that turns like a 33⅓ platter, each out of step with the others.
 
 ## Tools it adds
 
@@ -28,7 +29,10 @@ A toast fires on a crossing only: the failed count reaching three, or a new ques
 ## Panel behaviour
 
 - The panel opens by itself when any subagent starts, once per flow; closing it is not undone until the next flow.
+- The panel lists Running, then Planned, then Background, and the Ended group last.
+- If drawing the panel or the band fails, a dim line says `savvy-progress could not draw this pane: <kind>: <message>` instead of leaving it blank; the band keeps the bands of other mods under it.
 - The group of runs that are no longer working is **Ended · N** (done and failed runs alike). Its header collapses it, and it collapses on its own when the last running agent ends; an expand you make stays until the next run ends. Background shells and monitors don't count as running agents here.
+- On the desktop the Ended group shows the 20 that ended last, agents and background rows alike, and a **+K more ended** line for the rest. The desktop drops a whole panel that grows too large, so when the cards would not fit, the panel draws as many as fit and one **+N more running** (or **+K more ended**) line; the terminal lists everything.
 - Text colours meet 4.5:1 on the light and dark host backgrounds: per-theme tier colours, darker meta and percent text, dark labels on the coloured pills, white on the red flag.
 - A planned task of the `medium` tier is labelled Sonnet.
 
@@ -77,6 +81,8 @@ If `~/.local/state/omarchy/current/theme/colors.toml` exists, the panel and the 
 | `dark_background` (else `background`) | tiles and flag text |
 
 A missing key keeps its default colour. A file with `mode = "light"` is ignored. On the desktop the text, track and tile colours apply only while the host is in dark mode; `accent` and the terminal colours apply whenever a theme is loaded. The file is checked every 2 seconds while it exists (read again only when it changes) and every 60 seconds while it is missing, so a theme installed later is picked up.
+
+While the skins mod has a dark skin on, its theme wins over the file, and a `/skin` switch redraws the panel and the band at once: its `dim` is the dim text. A light skin behaves like a light host: the file's accent and terminal colours still apply (they are your own pick and are not tied to the mode, with no contrast check against the skin) and none of the dark-mode panel colours are drawn. With the skin off the file applies again. Without skins installed, the file alone applies.
 
 ## Settings
 
