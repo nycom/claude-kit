@@ -43,6 +43,8 @@ type ProgressInput = {
 // The Omarchy palette, when its file exists; render handlers copy the atom here and
 // the drawings read it, so a missing file (null) keeps every default colour.
 let pal: Palette | null = null
+// A light skin: the palette still colours the terminal rows and the accent, but its dark-only CSS is not drawn.
+let lightSkin = false
 let themePoll: { cancel(): void } | null = null
 let themeEvery = 0
 let clockTick: { cancel(): void } | null = null
@@ -51,11 +53,11 @@ let themePath = ''
 const accentOf = (): string => pal?.accent ?? ACCENT
 
 // Appended after the default styles (same specificity, later wins), in dark only: the
-// palette is a dark one and cards draw on the host's page, so a light host keeps the defaults.
+// palette is a dark one and cards draw on the host's page, so a light host (or skin) keeps the defaults.
 // Tile labels turn to the text colour: muted on the selection tile is too faint to read.
 // Given the classes a drawing uses, only the rules that name one of them.
 const themeCss = (used?: Set<string>): string => {
-  if (!pal) return ''
+  if (!pal || lightSkin) return ''
   const rules = [
     pal.foreground && `.t{fill:${pal.foreground}}`,
     pal.muted && `.s,.m,.tk{fill:${pal.muted}}`,
@@ -94,14 +96,20 @@ const failedLine = (what: string, error: HookFailure): RenderElement => ({
 // fault to the engine, but the handler's `$` calls reject then, so it too draws the line.
 export const paneFailed = (_$: unknown, _e: unknown, next: { error: HookFailure }): RenderElement => failedLine('pane', next.error)
 
-// skins' theme, while it names one, wins over colors.toml; a light one keeps the defaults,
-// as a light colors.toml does. skins' `dim` is the text tone this palette calls `muted`.
-async function paletteOf($: EngineInterface): Promise<Palette | null> {
+// A dark skin's theme (while skins names one) wins over colors.toml. A light skin leaves the file's
+// palette alone, as a light host does with no skin: the accent and terminal colours are the user's own
+// choice and apply in either mode, and only the dark-mode CSS stays off. skins' `dim` is the text tone
+// this palette calls `muted`. Palette and flag change in one step, so a handler mid-draw never sees them apart.
+async function paletteOf($: EngineInterface): Promise<void> {
   const skin = await read($, { plugin: 'skins', key: 'theme' } as const)
-  if (!skin) return read($, theme)
-  if (skin.mode === 'light') return null
-  const { accent, foreground, dim, red, selection, background } = skin
-  return { accent, foreground, muted: dim, red, selection, background }
+  const useFile = !skin || skin.mode === 'light'
+  const file = useFile ? await read($, theme) : null
+  lightSkin = skin?.mode === 'light'
+  if (useFile) pal = file
+  else {
+    const { accent, foreground, dim, red, selection, background } = skin
+    pal = { accent, foreground, muted: dim, red, selection, background }
+  }
 }
 
 // Re-arms the poll only when its cadence changes.
@@ -1608,7 +1616,7 @@ export const register: Register = (on, options) => {
     const s = tr()
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
-    pal = await paletteOf($)
+    await paletteOf($)
     // Deduped again here: a list written before the write sites deduped still draws.
     const list = uniqById(await read($, agents))
     const f = await read($, flow)
@@ -1881,7 +1889,7 @@ export const register: Register = (on, options) => {
   }).catch(paneFailed)
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    pal = await paletteOf($)
+    await paletteOf($)
     const f = await read($, flow)
     const list = await read($, agents)
     const flagged = list.filter(needsAttention).length
