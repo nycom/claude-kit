@@ -1551,9 +1551,11 @@ export const register: Register = (on, options) => {
         </Text>
       )
       const statusWord = (status: string) => (status === 'running' ? s.isRunning : status === 'failed' ? s.isFailed : status === 'planned' ? s.isPlanned : s.isFinished)
-      // The most recent running runs, agents and background tasks alike, loop; the rest hold.
+      // The most recent running agents loop, then the most recent background tasks; the rest hold.
+      // Agents first: a long-lived server, or a task reconcile found (started "now"), is not work.
+      const recent = <T extends { startedAt: number }>(xs: T[]) => [...xs].sort((x, y) => y.startedAt - x.startedAt)
       const looping = new Set<AgentRun | BackgroundTask>(
-        [...running, ...bg.filter(x => x.status === 'running')].sort((x, y) => y.startedAt - x.startedAt).slice(0, LOOPS),
+        [...recent(running), ...recent(bg.filter(x => x.status === 'running'))].slice(0, LOOPS),
       )
       // The constant drawings (see `constant`) take the experiment's `isInteractive`. A looping
       // one is a Client (mark.tsx), kept across redraws by its run's key; a still one, an image.
@@ -1593,7 +1595,7 @@ export const register: Register = (on, options) => {
         return (
           <Box flexDirection="column" gap={1}>
             <Box flexDirection="row">
-              {drawing('icons', true, { source: compactIconsSvg(icons.shown), alt: `${list.length} ${s.agentsCount}`, width: icons.width, height: 32, isInteractive: ANIMATED_INTERACTIVE })}
+              <Client key="icons" module="./mark.tsx" props={{ source: compactIconsSvg(icons.shown), alt: `${list.length} ${s.agentsCount}`, width: icons.width, height: 32, isInteractive: ANIMATED_INTERACTIVE } satisfies MarkProps} />
               <Svg source={compactSvg(W - icons.width, icons.more, t)} alt={summary} width={W - icons.width} height={32} />
             </Box>
             {flagged.map(a => (
@@ -1805,25 +1807,28 @@ export const register: Register = (on, options) => {
     )
 
     if (e.surface !== 'terminal' && 'Svg' in ui) {
-      const { Svg, Client } = ui
+      const { Svg } = ui
+      // A looping drawing is a mark Client where the surface has one (the desktop), else an image.
+      const Client = e.surface === 'desktop' && 'Client' in ui ? ui.Client : null
+      const loop = (key: string, props: MarkProps) => (Client ? <Client key={key} module="./mark.tsx" props={props} /> : <Svg key={key} {...props} />)
       // About 8 CSS px per reported column; the rest is the count, the dismiss
       // and their gaps. No floor above the slot: a row wider than it would wrap.
       const width = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 96 - (flagged ? pillW(chipText) + 8 : 0)))
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" alignItems="center" gap={1}>
-            {/* The bar's layers share one origin; the twinkle (constant, a mark.tsx Client) sits between the fill and the pill. */}
+            {/* The bar's layers share one origin; the twinkle (constant, see `loop`) sits between the fill and the pill. */}
             <Box flexDirection="row">
               <Box>
                 <Svg source={bandBaseSvg(f, width)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width - CRAB_W} height={H} />
                 <Box position="absolute" top={0} left={0}>
-                  <Client key="band-twinkle" module="./mark.tsx" props={{ source: bandTwinkleSvg(f, width), alt: f.title, width: width - CRAB_W, height: H, isInteractive: ANIMATED_INTERACTIVE } satisfies MarkProps} />
+                  {loop('band-twinkle', { source: bandTwinkleSvg(f, width), alt: f.title, width: width - CRAB_W, height: H, isInteractive: ANIMATED_INTERACTIVE })}
                 </Box>
                 <Box position="absolute" top={0} left={0}>
                   <Svg source={bandTopSvg(f, width)} alt={label(f)} width={width - CRAB_W} height={H} />
                 </Box>
               </Box>
-              <Client key="band-crab" module="./mark.tsx" props={{ source: bandCrabSvg(isWorking), alt: tr().agent, width: CRAB_W, height: H, isInteractive: ANIMATED_INTERACTIVE } satisfies MarkProps} />
+              {loop('band-crab', { source: bandCrabSvg(isWorking), alt: tr().agent, width: CRAB_W, height: H, isInteractive: ANIMATED_INTERACTIVE })}
             </Box>
             {chip}
             {crewButton}

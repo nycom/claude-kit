@@ -1,6 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+import { imgOf, MARK } from './drawing'
+
 type $T = Parameters<TestBody>[0]
 type OnT = Parameters<TestBody>[1]
 
@@ -33,9 +35,6 @@ const tokens = async ($: $T) => {
 type Img = { source?: string; alt?: string; width?: number; height?: number }
 type Node = { type: string; text?: string; props?: Img & { position?: string; module?: string; props?: Img }; children?: (Node | string)[] }
 const isAnimated = (src: string): boolean => /class="spin"|class="c-\w+ run"|@keyframes tw\{/.test(src)
-
-// A drawing's image: an Svg's own props, or a mark Client's (mark.tsx draws its props as an Svg).
-const imgOf = (n: Node): Img | undefined => (n.type === 'Svg' ? n.props : n.props?.module === 'hooks/mark.tsx' ? n.props.props : undefined)
 
 // Every drawing in drawing order, and the tree's shape with each drawing marked animated or data.
 const draw = async ($: $T, mount: () => ReturnType<$T['ui']['mount']>) => {
@@ -137,7 +136,7 @@ test('desktop pane: a running card draws its platter in a Client keyed by its ru
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'savvy-careful', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   let ui = await pane($)()
   const before = await markOf(ui, 'mark-w1')
-  expect(before?.props?.module).toBe('hooks/mark.tsx')
+  expect(before?.props?.module).toBe(MARK)
   const source = before?.props?.props?.source ?? ''
   expect(source).toContain('class="spin"')
   // The module draws that very source, as the image the card had before.

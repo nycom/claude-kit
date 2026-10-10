@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { imgOf, MARK } from './drawing'
+
 const STEP = 'mcp__savvy-progress__step'
 
 // The desktop band row: the host draws the count and the dismiss as Buttons beside the row's
@@ -15,10 +17,11 @@ test('desktop band: dot, bar, pill, crab and the attention chip share one centre
   await $.tool.call({ tool: STEP, done: 1, blocked: 'Postgres or SQLite?', agentId: 'w1' } as never)
 
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
-  type Img = { props: { source: string; height: number; alt: string } }
-  // A looping drawing is a mark Client (mark.tsx): its image's props are the Client's.
-  const marks = (await ui.findAll({ type: 'Client' })) as unknown as { props: { props: Img['props'] } }[]
-  const svgs = [...((await ui.findAll({ type: 'Svg' })) as unknown as Img[]), ...marks.map(c => ({ props: c.props.props }))]
+  type Img = { source: string; height: number; alt: string }
+  const svgs = ((await ui.findAll({})) as unknown as { type: string; props?: Img & { module?: string; props?: Img } }[]).flatMap(n => {
+    const props = imgOf(n)
+    return props ? [{ props }] : []
+  })
   await ui.unmount()
   // The bar's layers (the fill, the twinkle, the pill) share one origin; the crab is beside them.
   const row = svgs.find(s => s.props.alt.startsWith('Background tasks'))
@@ -82,8 +85,8 @@ test('desktop background rows: the platter and every other mark sit on the Stop 
   await notify('b3', 'failed')
 
   type Node = { type: string; props: { flexDirection?: string; alignItems?: string; alt?: string; source?: string; height?: number; module?: string; props?: { label?: string; alt?: string; source?: string; height?: number } }; children?: Node[] }
-  // A looping mark is a mark Client (mark.tsx): its image's props are the Client's.
-  const img = (n?: Node) => (n?.props.module === 'hooks/mark.tsx' ? { ...n, props: { ...n.props, ...n.props.props } } : n)
+  // A looping mark is a mark Client: its image's props are the Client's.
+  const img = (n?: Node) => (n?.props.module === MARK ? { ...n, props: { ...n.props, ...n.props.props } } : n)
   const ui = await $.ui.mount({ plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', surface: 'desktop', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
   // A row: its drawings (the data, then the mark) in a row Box, then the Stop control.
   const rows = ((await ui.findAll({ type: 'Box' })) as unknown as Node[]).filter(b => b.props.alignItems === 'center' && img(b.children?.[0]?.children?.[1])?.props.alt?.length)

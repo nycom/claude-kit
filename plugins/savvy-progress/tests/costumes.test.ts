@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { imgOf } from './drawing'
+
 // Which crab a worker wears: Explore's pirate, else a role from its type's name or its task, else its tier's.
 test('costumes: roles from the type name or the task, the tier costume otherwise', async ($, on) => {
   mock.clock(on)
@@ -37,7 +39,7 @@ test('costumes: roles from the type name or the task, the tier costume otherwise
   // Each card draws its crab, then its data; a looping crab is a mark Client, its source in its props.
   type Node = { type: string; props?: { source?: string; module?: string; props?: { source?: string } } }
   const cards = ((await ui.findAll({})) as unknown as Node[])
-    .map(n => (n.type === 'Svg' ? n.props?.source : n.props?.module === 'hooks/mark.tsx' ? n.props.props?.source : undefined))
+    .map(n => imgOf(n)?.source)
     .filter((src): src is string => src !== undefined)
   for (const [, description, costume] of cases) {
     const i = cards.findIndex(c => c.includes(`>${description}<`))

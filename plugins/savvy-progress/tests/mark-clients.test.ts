@@ -1,6 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+import { MARK } from './drawing'
+import golden from './terminal-golden'
+
 type $T = Parameters<TestBody>[0]
 type OnT = Parameters<TestBody>[1]
 
@@ -48,7 +51,7 @@ const loops = async (mount: () => Promise<Mounted>, before?: (ui: Mounted) => Pr
   const nodes = (await ui.findAll({})) as unknown as Node[]
   await ui.unmount()
   const svgs = nodes.filter(n => n.type === 'Svg' && isAnimated(n.props?.source))
-  const marks = nodes.filter(n => n.type === 'Client' && n.props?.module === 'hooks/mark.tsx')
+  const marks = nodes.filter(n => n.type === 'Client' && n.props?.module === MARK)
   return { svgs, marks, keys: marks.filter(n => isAnimated(n.props?.props?.source)).map(keyOf), json: JSON.stringify(marks), statics: nodes.filter(n => n.type === 'Svg').map(n => n.props?.source ?? '') }
 }
 
@@ -126,12 +129,45 @@ test('desktop: with five running agents only the three most recent loop, the res
   expect(icons.match(/opacity="\.3"/g)?.length).toBe(5)
 })
 
-test('terminal: the pane and the band draw no Client', async ($, on) => {
+test('terminal: the pane and the band draw exactly what they drew before, no Client', async ($, on) => {
+  const clock = setup(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Steady', phase: 'delegate', done: 1, total: 4 } as never)
+  for (const d of ['a', 'b', 'c', 'd']) {
+    await spawn($, d)
+    await clock.advance(1_000)
+  }
+  await end($, 'w1')
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev', run_in_background: true } as never)
+  await clock.advance(5_000)
+  const drawn = async (component: 'Pane' | 'AbovePrompt') => {
+    const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component, requestId: 'savvy-agents', props: PROPS } as never)
+    const tree = JSON.parse(JSON.stringify(await ui.drawn(), (k, v) => (k === 'press' ? undefined : v)))
+    await ui.unmount()
+    return tree
+  }
+  expect(await drawn('Pane')).toEqual(golden.pane)
+  expect(await drawn('AbovePrompt')).toEqual(golden.band)
+})
+
+test('mobile and vscode: the band draws its twinkle and crab as images, having no Client', async ($, on) => {
   setup(on)
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Steady', phase: 'delegate', done: 0, total: 4 } as never)
-  for (const d of ['a', 'b', 'c', 'd', 'e']) await spawn($, d)
-  for (const ui of [await pane($, 'terminal'), await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component: 'AbovePrompt', props: PROPS })]) {
-    expect((await ui.findAll({ type: 'Client' })).length).toBe(0)
+  await spawn($, 'a')
+  for (const surface of ['mobile', 'vscode'] as const) {
+    const ui = await $.ui.mount({ plugin: 'savvy-progress', surface, component: 'AbovePrompt', props: PROPS })
+    const sources = ((await ui.findAll({ type: 'Svg' })) as unknown as Node[]).map(n => n.props?.source ?? '')
     await ui.unmount()
+    expect(sources.some(s => s.includes('@keyframes tw{'))).toBe(true)
+    expect(sources.some(s => /class="c-\w+ run"/.test(s))).toBe(true)
   }
+})
+
+test('desktop: running agents take the loops before a newer background task', async ($, on) => {
+  const clock = setup(on)
+  for (const d of ['a', 'b', 'c']) {
+    await spawn($, d)
+    await clock.advance(1_000)
+  }
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev', run_in_background: true } as never)
+  expect((await loops(() => pane($))).keys).toEqual(['crab-w3', 'mark-w3', 'crab-w2', 'mark-w2', 'crab-w1', 'mark-w1'])
 })
