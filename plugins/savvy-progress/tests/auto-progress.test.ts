@@ -99,3 +99,32 @@ test('a coordinator call still overwrites what the labels set', async ($, on) =>
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', phase: 'delegate', done: 1 } as never)
   expect(await band($)).toBe('Ship it: Tasks 1/2, 50%')
 })
+
+test("the delegate skill's own close still lands on a flow the labels finished", async ($, on) => {
+  setup(on)
+  await plan($)
+  for (const task of ['a', 'b']) {
+    await spawn($, `${task} merge`)
+    await end($, `w${task === 'a' ? 1 : 2}`)
+  }
+  await spawn($, 'x docs') // w3
+  await end($, 'w3')
+  expect(await band($)).toBe('Ship it: Done, 100%')
+  // The skill then reports the close and finishes, with no title: the same flow, not a blank one.
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', done: 2, phase: 'close' } as never)
+  expect(await band($)).toMatch(/^Ship it: /)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', finished: true } as never)
+  expect(await band($)).toBe('Ship it: Done, 100%')
+})
+
+test('a docs agent that failed does not finish the flow', async ($, on) => {
+  setup(on)
+  await plan($)
+  for (const task of ['a', 'b']) {
+    await spawn($, `${task} merge`)
+    await end($, `w${task === 'a' ? 1 : 2}`)
+  }
+  await spawn($, 'x docs') // w3
+  await end($, 'w3', 'error')
+  expect(await band($)).toBe('Ship it: Tasks 2/2, 100%')
+})

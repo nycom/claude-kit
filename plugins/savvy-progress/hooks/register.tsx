@@ -16,10 +16,6 @@ const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
 const theme = atom({ plugin: 'savvy-progress', key: 'theme' } as const, null)
 const background = atom({ plugin: 'savvy-progress', key: 'background' } as const, [])
 
-// Experiment hook, no option: true draws every animated drawing (crabs, platters, the band's
-// twinkle) as `isInteractive`, a sandboxed frame rather than an image, to compare the two live.
-const ANIMATED_INTERACTIVE = false
-
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
 const PANE = 'savvy-agents'
@@ -45,6 +41,8 @@ type ProgressInput = {
 let pal: Palette | null = null
 // A light skin: the palette still colours the terminal rows and the accent, but its dark-only CSS is not drawn.
 let lightSkin = false
+let paletteStarted = 0
+let paletteApplied = 0
 let themePoll: { cancel(): void } | null = null
 let themeEvery = 0
 let clockTick: { cancel(): void } | null = null
@@ -101,9 +99,13 @@ export const paneFailed = (_$: unknown, _e: unknown, next: { error: HookFailure 
 // choice and apply in either mode, and only the dark-mode CSS stays off. skins' `dim` is the text tone
 // this palette calls `muted`. Palette and flag change in one step, so a handler mid-draw never sees them apart.
 async function paletteOf($: EngineInterface): Promise<void> {
+  const mine = ++paletteStarted
   const skin = await read($, { plugin: 'skins', key: 'theme' } as const)
   const useFile = !skin || skin.mode === 'light'
   const file = useFile ? await read($, theme) : null
+  // A read overtaken by a later one that has already applied is dropped.
+  if (mine < paletteApplied) return
+  paletteApplied = mine
   lightSkin = skin?.mode === 'light'
   if (useFile) pal = file
   else {
@@ -265,8 +267,10 @@ const blank = (): Flow => ({
   tasks: [],
 })
 
+// A call with no title carries on the flow it finds, finished or not: the delegate skill's close
+// (`done`, then `finished`) lands on a flow the agent labels already finished.
 const isNewFlow = (prev: Flow | null, input: ProgressInput): boolean =>
-  !prev || prev.isFinished || (input.title !== undefined && oneLine(input.title) !== prev.title)
+  !prev || (input.title !== undefined && (prev.isFinished || oneLine(input.title) !== prev.title))
 
 const cleanTasks = (tasks: ProgressInput['tasks']): PlannedTask[] | undefined =>
   tasks
@@ -622,7 +626,7 @@ const autoFlow = (f: Flow | null, list: AgentRun[], run: AgentRun | undefined): 
   const merged = new Set(list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s?.word === 'merge').map(s => s?.task))
   const done = Math.max(f.done, Math.min(f.total, merged.size))
   const isFinished =
-    done > 0 && done === f.total && isDocs(run) && !list.some(a => a.status === 'running' && (isDocs(a) || titleOf(titles, a.description) !== undefined))
+    done > 0 && done === f.total && isDocs(run) && run.status === 'done' && !list.some(a => a.status === 'running' && (isDocs(a) || titleOf(titles, a.description) !== undefined))
   return done === f.done && !isFinished ? f : { ...f, done, ...(isFinished ? { isFinished, phase: 'close' as const } : {}) }
 }
 
@@ -1254,10 +1258,10 @@ const ctxBar = (pct: number, width: number): string => {
 }
 
 const STATUS_GLYPH: Record<string, string> = { done: '✓', failed: '✗', planned: '◷' }
-// A running mark turns clockwise a quadrant on each of the clock's ticks, a second or a minute
-// apart; the i-th row runs i quadrants ahead.
+// A running mark turns clockwise a half on each of the clock's ticks, a second or a minute
+// apart; the i-th row runs i steps ahead. Halves, so no frame is the planned glyph.
 const glyphOf = (status: string, at: number, i = 0): string =>
-  status === 'running' ? '◴◷◶◵'.charAt((Math.floor(at / (tickMs || 1000)) + i) % 4) : STATUS_GLYPH[status]
+  status === 'running' ? '◐◓◑◒'.charAt((Math.floor(at / (tickMs || 1000)) + i) % 4) : STATUS_GLYPH[status]
 
 // Opens the agents pane, or closes it when it is up; true when it ends up open.
 async function togglePane($: EngineInterface): Promise<boolean> {
@@ -1670,8 +1674,7 @@ export const register: Register = (on, options) => {
         </Text>
       )
       const statusWord = (status: string) => (status === 'running' ? s.isRunning : status === 'failed' ? s.isFailed : status === 'planned' ? s.isPlanned : s.isFinished)
-      // The constant drawings (see `constant`) take the experiment's `isInteractive`. A looping
-      // one is a Client (mark.tsx), kept across redraws by its run's key; a still one, an image.
+      // A looping drawing (see `constant`) is a Client (mark.tsx), kept across redraws by its run's key; a still one, an image.
       const drawing = (key: string, isLooping: boolean, props: MarkProps) =>
         isLooping ? <Client key={key} module="./mark.tsx" props={props} /> : <Svg key={key} {...props} />
       const card = (a: AgentRun) => {
@@ -1679,9 +1682,9 @@ export const register: Register = (on, options) => {
         const isLooping = a.status === 'running'
         return (
           <Box key={a.id} flexDirection="row">
-            {drawing(`crab-${a.id}`, isLooping, { source: crabColumnSvg(a, cardH, isLooping), alt: s.agent, width: CARD_CRAB_W, height: cardH, isInteractive: ANIMATED_INTERACTIVE })}
+            {drawing(`crab-${a.id}`, isLooping, { source: crabColumnSvg(a, cardH, isLooping), alt: s.agent, width: CARD_CRAB_W, height: cardH })}
             <Svg source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W - CARD_CRAB_W - MARK_W} height={cardH} />
-            {drawing(`mark-${a.id}`, isLooping, { source: markColumnSvg(cardH, 16, a.status, colorOf(tierOf(a.type)), a.id), alt: statusWord(a.status), width: MARK_W, height: cardH, isInteractive: ANIMATED_INTERACTIVE })}
+            {drawing(`mark-${a.id}`, isLooping, { source: markColumnSvg(cardH, 16, a.status, colorOf(tierOf(a.type)), a.id), alt: statusWord(a.status), width: MARK_W, height: cardH })}
           </Box>
         )
       }
@@ -1695,7 +1698,6 @@ export const register: Register = (on, options) => {
               alt: statusWord(bgMark(x)),
               width: MARK_W,
               height: BG_H,
-              isInteractive: ANIMATED_INTERACTIVE,
             })}
           </Box>
           {isActive(x) ? stopButton(x) : null}
@@ -1707,7 +1709,7 @@ export const register: Register = (on, options) => {
         return (
           <Box flexDirection="column" gap={1}>
             <Box flexDirection="row">
-              <Client key="icons" module="./mark.tsx" props={{ source: compactIconsSvg(icons.shown), alt: `${list.length} ${s.agentsCount}`, width: icons.width, height: 32, isInteractive: ANIMATED_INTERACTIVE } satisfies MarkProps} />
+              <Client key="icons" module="./mark.tsx" props={{ source: compactIconsSvg(icons.shown), alt: `${list.length} ${s.agentsCount}`, width: icons.width, height: 32 } satisfies MarkProps} />
               <Svg source={compactSvg(W - icons.width, icons.more, t)} alt={summary} width={W - icons.width} height={32} />
             </Box>
             {flagged.map(a => (
@@ -1954,13 +1956,13 @@ export const register: Register = (on, options) => {
               <Box>
                 <Svg source={bandBaseSvg(f, width)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width - CRAB_W} height={H} />
                 <Box position="absolute" top={0} left={0}>
-                  {loop('band-twinkle', { source: bandTwinkleSvg(f, width), alt: f.title, width: width - CRAB_W, height: H, isInteractive: ANIMATED_INTERACTIVE })}
+                  {loop('band-twinkle', { source: bandTwinkleSvg(f, width), alt: f.title, width: width - CRAB_W, height: H })}
                 </Box>
                 <Box position="absolute" top={0} left={0}>
                   <Svg source={bandTopSvg(f, width)} alt={label(f)} width={width - CRAB_W} height={H} />
                 </Box>
               </Box>
-              {loop('band-crab', { source: bandCrabSvg(isWorking), alt: tr().agent, width: CRAB_W, height: H, isInteractive: ANIMATED_INTERACTIVE })}
+              {loop('band-crab', { source: bandCrabSvg(isWorking), alt: tr().agent, width: CRAB_W, height: H })}
             </Box>
             {chip}
             {crewButton}

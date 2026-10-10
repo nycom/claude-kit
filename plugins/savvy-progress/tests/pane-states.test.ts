@@ -150,10 +150,10 @@ test('desktop: a running agent draws a turning platter in its tier colour, each 
   expect(Number(ring?.[1]) - 3.94 - 3.94 / 3).toBeGreaterThanOrEqual(0)
 })
 
-test("terminal: a running agent's mark turns one quadrant a second with the clock", async ($, on) => {
+test("terminal: a running agent's mark turns one step a second with the clock", async ($, on) => {
   const clock = setup(on)
   await spawn($, 'fix tests')
-  const SPIN = '◴◷◶◵'
+  const SPIN = '◐◓◑◒'
   const mark = async () => (await leaves($, 'terminal')).map(n => n.text ?? '').find(t => t.length === 1 && SPIN.includes(t)) ?? ''
   const first = await mark()
   expect(first).not.toBe('')
@@ -161,10 +161,10 @@ test("terminal: a running agent's mark turns one quadrant a second with the cloc
   expect(await mark()).toBe(SPIN[(SPIN.indexOf(first) + 1) % 4])
 })
 
-test("terminal: with only a background shell running, its mark still turns a quadrant on each minute's tick", async ($, on) => {
+test("terminal: with only a background shell running, its mark still turns a step on each minute's tick", async ($, on) => {
   const clock = setup(on)
   await bash($, 'npm run dev')
-  const SPIN = '◴◷◶◵'
+  const SPIN = '◐◓◑◒'
   const mark = async () => (await leaves($, 'terminal')).map(n => n.text ?? '').find(t => t.length === 1 && SPIN.includes(t)) ?? ''
   const first = await mark()
   expect(first).not.toBe('')
@@ -218,4 +218,17 @@ test('a respawn with the identical description is still round 2', async ($, on) 
   await $.agent.spawn({ tool_use_id: 'again', prompt: '', description: 'kit-pr2 implement', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   const labels = (await leaves($, 'terminal')).map(labelOf)
   expect(labels.some(l => l.includes('Running · 2'))).toBe(true)
+})
+
+test('terminal: a running mark never shows the planned glyph', async ($, on) => {
+  const clock = setup(on)
+  await spawn($, 'fix tests')
+  const PLANNED = '◷'
+  const marks: string[] = []
+  for (let i = 0; i < 4; i++) {
+    marks.push(...(await leaves($, 'terminal')).map(n => n.text ?? '').filter(t => t.length === 1 && '◴◷◶◵◐◓◑◒'.includes(t)))
+    await clock.advance(1_000)
+  }
+  expect(marks.length).toBe(4)
+  expect(marks).not.toContain(PLANNED)
 })

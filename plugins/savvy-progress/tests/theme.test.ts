@@ -134,6 +134,11 @@ test('theme: the skins theme wins over colors.toml, redraws when it changes, nul
   const light = await drawn(pane)
   expect(light).not.toContain('<style>@media (prefers-color-scheme: dark){')
   expect(light).not.toContain('#a9b1d6')
+  // The desktop band draws in the file's accent, with no dark CSS either.
+  const lightBand = await drawn(band)
+  expect(lightBand).toContain('#7aa2f7')
+  expect(lightBand).not.toContain('<style>@media (prefers-color-scheme: dark){')
+  expect(lightBand).not.toContain('#c4a7e7')
   // The terminal band keeps the file's accent (the skin's is not applied).
   const term = await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
   await clock.settle()
@@ -147,4 +152,72 @@ test('theme: the skins theme wins over colors.toml, redraws when it changes, nul
   expect(await drawn(pane)).toContain('.t{fill:#a9b1d6}')
   await pane.unmount()
   await band.unmount()
+})
+
+// A palette read that began under one skin and ends after a later one has been applied must not undo it.
+test('theme: a palette read overtaken by a skin switch does not overwrite the newer palette', { plugins: [SKINS] }, async ($, on) => {
+  const clock = mock.clock(on)
+  mock.env(on, { HOME: '/home/k' })
+  const file = '/home/k/.local/state/omarchy/current/theme/colors.toml'
+  on('fs.stat', (_$, e) => {
+    if (e.path === file) return { value: { kind: 'file', mtimeMs: 1 } as never }
+    throw new Error('ENOENT')
+  })
+  on('fs.read', () => ({ value: 'accent = "#7aa2f7"\nforeground = "#a9b1d6"\n' }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('tool.register', () => ({ value: undefined }) as never)
+  on('command.register', () => ({ value: undefined }) as never)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  // The pane's render stops at its read of the file palette; the band's, begun after the switch to
+  // a dark skin, stops at its read of the flow. The pane's then finishes first, the band's last.
+  const gates: Record<string, { release: () => void; reached: Promise<void> }> = {}
+  const gate = (key: string) => {
+    let release = () => {}
+    let reach = () => {}
+    const held = new Promise<void>(r => (release = r))
+    gates[key] = { release, reached: new Promise<void>(r => (reach = r)) }
+    return { held, reach }
+  }
+  const palette = gate('theme')
+  const flow = gate('flow')
+  let armed = false
+  let isPaneHeld = false
+  on('state.get', async (_$, e, next) => {
+    const value = await next(e)
+    const { plugin, key } = e as { plugin?: string; key?: string }
+    if (armed && plugin === 'savvy-progress' && key === 'theme' && !isPaneHeld) {
+      isPaneHeld = true
+      palette.reach()
+      await palette.held
+    } else if (isPaneHeld && plugin === 'savvy-progress' && key === 'flow') {
+      flow.reach()
+      await flow.held
+    }
+    return value
+  })
+  const skin = (t: object) => $.prompt.submit({ text: `/skin ${JSON.stringify(t)}`, origin: { kind: 'user' }, wait: false } as never)
+  const ROSE = { mode: 'dark', accent: '#c4a7e7', foreground: '#e0def4', dim: '#908caa', red: '#eb6f92', selection: '#403d52', background: '#191724' }
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'ship it', total: 2, done: 1 } as never)
+  await skin({ ...ROSE, mode: 'light' })
+  await clock.settle()
+
+  armed = true
+  const props = { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never
+  const pane = $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props })
+  await gates.theme?.reached
+  await skin(ROSE)
+  const band = $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props })
+  await gates.flow?.reached
+  gates.theme?.release()
+  for (let i = 0; i < 500; i++) await Promise.resolve()
+  gates.flow?.release()
+  const ui = await band
+  await clock.settle()
+  const drawn = (await ui.findAll({ type: 'Svg' })).map(s => String((s as unknown as { props: { source: string } }).props.source)).join('')
+  expect(drawn).toContain('<style>@media (prefers-color-scheme: dark){.t{fill:#e0def4}')
+  await (await pane).unmount()
+  await ui.unmount()
 })
