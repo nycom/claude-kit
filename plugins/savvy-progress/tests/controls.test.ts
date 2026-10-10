@@ -1,18 +1,12 @@
-import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 
-type $T = Parameters<TestBody>[0]
-type OnT = Parameters<TestBody>[1]
+import { PROPS, setup as setupHost } from './drawing'
+import type { $T, Node, OnT } from './drawing'
 
-const PANE = { plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never } as const
+const PANE = { plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', props: PROPS } as const
 
 const setup = (on: OnT, calls: Record<string, unknown>[] = []) => {
-  mock.clock(on, { now: Date.UTC(2026, 9, 9, 12, 2, 0) })
-  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
-  on('turn.complete', () => ({ text: '' }))
-  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' } }))
+  setupHost(on)
   on('tool.call', { tool: 'TaskStop' }, (_$, e) => (calls.push(e as never), { result: { message: 'stopped', task_id: 'b1', task_type: 'local_bash' } }))
 }
 
@@ -23,7 +17,6 @@ const fill = async ($: $T) => {
   await $.tool.call({ tool: 'Bash', command: 'npm run dev', run_in_background: true } as never)
 }
 
-type Node = { type: string; key?: string; props?: { key?: string; module?: string; props?: { label?: string } } }
 const clientsOf = async (ui: { findAll: (q: object) => Promise<unknown[]> }) =>
   ((await ui.findAll({ type: 'Client' })) as Node[]).filter(n => n.props?.module === 'hooks/controls.tsx').map(n => [n.props?.key ?? n.key, n.props?.module, n.props?.props?.label])
 

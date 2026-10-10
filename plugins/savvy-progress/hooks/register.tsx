@@ -294,7 +294,7 @@ const merge = (prev: Flow | null, input: ProgressInput): Flow => {
     total,
     done,
     phase: input.finished ? 'close' : phase,
-    isFinished: input.finished === true,
+    isFinished: input.finished ?? base.isFinished,
     tasks,
   }
 }
@@ -1148,7 +1148,7 @@ const ENDED_MAX = 20
 // What the engine's text budget counts of a drawing: a Client's props, an Svg's alt, a key, a
 // label and every string; never an Svg's source.
 type Counted = { type?: string; props?: { key?: unknown; label?: unknown; alt?: unknown }; children?: unknown[] }
-const engineChars = (n: unknown): number => {
+export const engineChars = (n: unknown): number => {
   if (typeof n === 'string') return n.length
   if (!n || typeof n !== 'object') return 0
   const e = n as Counted

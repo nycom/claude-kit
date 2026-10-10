@@ -1,25 +1,16 @@
-import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 
-import { imgOf, MARK } from './drawing'
-
-type $T = Parameters<TestBody>[0]
-type OnT = Parameters<TestBody>[1]
+import { imgOf, MARK, PROPS, setup as setupHost } from './drawing'
+import type { $T, Node, OnT } from './drawing'
 
 // A desktop Svg is an image: any change in its source is a new image whose animations start
 // over. So every looping drawing has a source that no tick, step, token count or clock reading
 // touches; what changes is drawn beside or over it, in drawings of its own.
 
-const T0 = Date.UTC(2026, 9, 9, 12, 2, 0)
-const PROPS = { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never
 const STEP = 'mcp__savvy-progress__step'
 
 const setup = (on: OnT) => {
-  const clock = mock.clock(on, { now: T0 })
-  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
-  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' } }))
+  const clock = setupHost(on)
   on('turn.step', async function* () {
     return { turnId: 'w1', index: 0, answer: '', toolUses: [], usage: { model: 'claude-opus-5-5', input_tokens: 40_000, output_tokens: 2_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never
   })
@@ -32,8 +23,6 @@ const tokens = async ($: $T) => {
   for await (const _ of stream) void _
 }
 
-type Img = { source?: string; alt?: string; width?: number; height?: number }
-type Node = { type: string; text?: string; props?: Img & { position?: string; module?: string; props?: Img }; children?: (Node | string)[] }
 const isAnimated = (src: string): boolean => /class="spin"|class="c-\w+ run"|@keyframes tw\{/.test(src)
 
 // Every drawing in drawing order, and the tree's shape with each drawing marked animated or data.

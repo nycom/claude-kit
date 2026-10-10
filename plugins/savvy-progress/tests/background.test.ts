@@ -1,11 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
 
-type $T = Parameters<TestBody>[0]
-type OnT = Parameters<TestBody>[1]
-
-const T0 = Date.UTC(2026, 9, 9, 12, 2, 0)
-const PANE = { plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never } as const
+import { bash, PROPS, T0 } from './drawing'
+import type { $T, OnT } from './drawing'
+const PANE = { plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', props: PROPS } as const
 
 const setup = (on: OnT, toasts: string[] = [], opens: string[] = [], calls: Record<string, unknown>[] = []) => {
   const clock = mock.clock(on, { now: T0 })
@@ -38,7 +35,6 @@ const countTicks = (on: OnT) => {
   return ticks
 }
 
-const bash = ($: $T) => $.tool.call({ tool: 'Bash', command: 'npm run dev -- --port 5173', run_in_background: true } as never)
 const notify = ($: $T, id: string, status: string) =>
   $.prompt.submit({
     text: `<task-notification>\n<task-id>${id}</task-id>\n<status>${status}</status>\n<summary>Background command finished</summary>\n</task-notification>`,

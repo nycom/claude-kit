@@ -1,40 +1,25 @@
-import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 
-import { MARK } from './drawing'
-
-type $T = Parameters<TestBody>[0]
-type OnT = Parameters<TestBody>[1]
+import { end, MARK, PROPS, setup as setupHost, spawn } from './drawing'
+import type { $T, Node, OnT } from './drawing'
 
 // The desktop rebuilds a surface's images on every redraw, so a looping image there starts over;
 // a Client under one key is kept and draws again only on new props. So every looping drawing on
 // the desktop is a Client (mark.tsx) whose props no tick, step, token or click touches.
 
-const T0 = Date.UTC(2026, 9, 9, 12, 2, 0)
-const PROPS = { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never
 const STEP = 'mcp__savvy-progress__step'
 
 const setup = (on: OnT) => {
-  const clock = mock.clock(on, { now: T0 })
-  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  let agent = 0
-  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `w${++agent}` }))
-  on('turn.complete', () => ({ text: '' }))
-  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' } }))
+  const clock = setupHost(on)
   on('turn.step', async function* () {
     return { turnId: 'w1', index: 0, answer: '', toolUses: [], usage: { model: 'claude-opus-5-5', input_tokens: 40_000, output_tokens: 2_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never
   })
   return clock
 }
-const spawn = ($: $T, description: string) =>
-  $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType: 'savvy-heavy', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
-const end = ($: $T, agentId: string) => $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: agentId, agentId } as never)
 const tokens = async ($: $T) => {
   for await (const _ of $.turn.step({ turnId: 'w1', index: 0, model: 'claude-opus-5-5', messageCount: 1, agentId: 'w1' } as never)) void _
 }
 
-type Node = { type: string; key?: string; props?: { key?: string; module?: string; source?: string; props?: { source?: string; width?: number; height?: number } } }
 const isAnimated = (src = ''): boolean => /class="spin"|class="c-\w+ run"|@keyframes tw\{/.test(src)
 const keyOf = (n: Node) => n.props?.key ?? n.key ?? ''
 
@@ -64,8 +49,8 @@ const expectSteady = (marks: Node[]) => {
 test('desktop: every looping drawing is a keyed mark Client of fixed size, its props byte-identical across the clock, tokens, a step and a click', async ($, on) => {
   const clock = setup(on)
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Steady', phase: 'delegate', done: 0, total: 4 } as never)
-  await spawn($, 'fix tests')
-  await spawn($, 'old work')
+  await spawn($, 'fix tests', 'savvy-heavy')
+  await spawn($, 'old work', 'savvy-heavy')
   await end($, 'w2')
   await $.tool.call({ tool: 'Bash', command: 'npm run dev', run_in_background: true } as never)
 
@@ -101,7 +86,7 @@ test('terminal: the pane and the band draw text and buttons only, no Client or i
   const clock = setup(on)
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Steady', phase: 'delegate', done: 1, total: 4 } as never)
   for (const d of ['a', 'b', 'c', 'd']) {
-    await spawn($, d)
+    await spawn($, d, 'savvy-heavy')
     await clock.advance(1_000)
   }
   await end($, 'w1')
@@ -123,7 +108,7 @@ test('terminal: the pane and the band draw text and buttons only, no Client or i
 test('mobile and vscode: the band draws its twinkle and crab as images, having no Client', async ($, on) => {
   setup(on)
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Steady', phase: 'delegate', done: 0, total: 4 } as never)
-  await spawn($, 'a')
+  await spawn($, 'a', 'savvy-heavy')
   for (const surface of ['mobile', 'vscode'] as const) {
     const ui = await $.ui.mount({ plugin: 'savvy-progress', surface, component: 'AbovePrompt', props: PROPS })
     const sources = ((await ui.findAll({ type: 'Svg' })) as unknown as Node[]).map(n => n.props?.source ?? '')

@@ -1,43 +1,22 @@
-import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 
-type $T = Parameters<TestBody>[0]
-type OnT = Parameters<TestBody>[1]
+import { engineChars } from '../hooks/register'
+import { bash, end, finish, PROPS, setup, spawn } from './drawing'
+import type { $T, Node } from './drawing'
 
 // The desktop refuses a whole pane past 2000 nodes or 262144 chars and shows "Nothing to show
 // yet"; the engine blanks every Client past its 1e5 text budget. Both silently. So the pane
 // draws what fits, under both with margin, and says how many it left out.
 
-const T0 = Date.UTC(2026, 9, 9, 12, 2, 0)
-const PROPS = { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never
-
-const setup = (on: OnT) => {
-  const clock = mock.clock(on, { now: T0 })
-  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  let agent = 0
-  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `w${++agent}` }))
-  on('turn.complete', () => ({ text: '' }))
-  on('prompt.submit', (_$, e) => ({ text: e.text }))
-  let task = 0
-  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: `b${++task}` } }))
-  return clock
-}
 // The costumes with the most pixels, so the running cards are as big as they get.
-const spawn = ($: $T, description: string, subagentType: string) =>
-  $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType, provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
-const end = ($: $T, agentId: string) => $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: agentId, agentId } as never)
-const bash = ($: $T, command: string) => $.tool.call({ tool: 'Bash', command, run_in_background: true } as never)
-const finish = ($: $T, id: string) =>
-  $.prompt.submit({ text: `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>\n</task-notification>`, origin: { kind: 'task-notification' }, wait: false } as never)
 const TYPES = ['savvy-medium', 'savvy-heavy', 'savvy-fable', 'savvy-careful', 'savvy-light']
 
-type Node = { type: string; key?: string; text?: string; props?: { key?: string; alt?: string; source?: string; module?: string; props?: unknown }; children?: (Node | string)[] }
 const keyOf = (n: Node) => n.props?.key ?? n.key ?? ''
 
-// What the engine's budget counts: Client props, Svg alts and strings, never an Svg's source.
-const engineChars = (n: Node | string): number =>
-  typeof n === 'string' ? n.length : n.type === 'Client' ? JSON.stringify(n.props).length : n.type === 'Svg' ? (n.props?.alt ?? '').length : (n.children ?? []).reduce((s, c) => s + engineChars(c), 0)
+// The engine's text budget by its own rule, read straight off the flat node list: a Client's props
+// as JSON, an Svg's alt, a Text's string. Never an Svg's source.
+const drawnChars = (nodes: Node[]) =>
+  nodes.reduce((sum, n) => sum + (n.type === 'Client' ? JSON.stringify(n.props).length : n.type === 'Svg' ? (n.props?.alt ?? '').length : n.type === 'Text' ? (n.text ?? '').length : 0), 0)
 
 const drawPane = async ($: $T, press?: string) => {
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: PROPS })
@@ -104,6 +83,12 @@ test('desktop pane: 30 running agents and 10 background shells stay inside the e
   }
   for (let i = 1; i <= 10; i++) await bash($, `npm run watcher ${i}`)
   const pane = await drawPane($)
+  // Counted from the tree itself, the pane stays under the engine's 1e5 and fills most of the 90k it allows.
+  const chars = drawnChars(pane.nodes)
+  expect(chars).toBeLessThan(90_000)
+  expect(chars).toBeGreaterThan(80_000)
+  // The hook's own count also takes keys and labels, so it is never below the plain count.
+  expect(engineChars(pane.root)).toBeGreaterThanOrEqual(chars)
   expect(engineChars(pane.root)).toBeLessThan(90_000)
   expect(pane.json.length).toBeLessThan(200_000)
   const drawn = pane.keys.filter(k => /^w\d+$/.test(k) || k.startsWith('bg-')).length

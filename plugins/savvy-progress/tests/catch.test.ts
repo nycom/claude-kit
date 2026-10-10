@@ -1,11 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+
 import { paneFailed } from '../hooks/register'
-
-type $T = Parameters<TestBody>[0]
-type OnT = Parameters<TestBody>[1]
-
-const PROPS = { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never
+import { PROPS } from './drawing'
+import type { $T, OnT } from './drawing'
 
 // The desktop's Svg constructor throws: a hook drawing an Svg fails mid-draw. Box and Text stay whole.
 const breakSvg = (on: OnT) =>

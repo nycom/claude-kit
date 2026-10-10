@@ -1,22 +1,10 @@
-import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 
-type $T = Parameters<TestBody>[0]
+import { end, setup, spawn } from './drawing'
+import type { $T } from './drawing'
 
-const setup = (on: Parameters<TestBody>[1]) => {
-  mock.clock(on)
-  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  let n = 0
-  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `w${++n}` }))
-  on('turn.complete', () => ({ text: '' }))
-}
 const plan = ($: $T) =>
   $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Ship it', total: 2, tasks: [{ title: 'a' }, { title: 'b' }] } as never)
-const spawn = ($: $T, description: string) =>
-  $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
-const end = ($: $T, agentId: string, reason = 'answer') =>
-  $.turn.complete({ reason, answer: '', durationMs: 0, isAborted: false, turnId: agentId, agentId } as never)
 // The band's own words: "<title>: <label>, <percent>".
 const band = async ($: $T) => {
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
@@ -112,7 +100,7 @@ test("the delegate skill's own close still lands on a flow the labels finished",
   expect(await band($)).toBe('Ship it: Done, 100%')
   // The skill then reports the close and finishes, with no title: the same flow, not a blank one.
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', done: 2, phase: 'close' } as never)
-  expect(await band($)).toMatch(/^Ship it: /)
+  expect(await band($)).toBe('Ship it: Done, 100%')
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', finished: true } as never)
   expect(await band($)).toBe('Ship it: Done, 100%')
 })

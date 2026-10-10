@@ -1,40 +1,10 @@
-import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 
-type $T = Parameters<TestBody>[0]
-type OnT = Parameters<TestBody>[1]
+import { bash, end, finish, PROPS, setup, spawn } from './drawing'
+import type { $T, Node } from './drawing'
+
 type Surface = 'terminal' | 'desktop'
 
-const T0 = Date.UTC(2026, 9, 9, 12, 2, 0)
-const PROPS = { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never
-
-const setup = (on: OnT) => {
-  const clock = mock.clock(on, { now: T0 })
-  on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  let agent = 0
-  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `w${++agent}` }))
-  on('turn.complete', () => ({ text: '' }))
-  on('prompt.submit', (_$, e) => ({ text: e.text }))
-  on('classic.Stop', () => ({}))
-  on('classic.SessionStart', () => ({}))
-  let task = 0
-  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: `b${++task}` } }))
-  return clock
-}
-const spawn = ($: $T, description: string, subagentType = 'general-purpose') =>
-  $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType, provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
-const end = ($: $T, agentId: string) =>
-  $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: agentId, agentId } as never)
-const bash = ($: $T, command: string) => $.tool.call({ tool: 'Bash', command, run_in_background: true } as never)
-const finish = ($: $T, id: string) =>
-  $.prompt.submit({
-    text: `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>`,
-    origin: { kind: 'task-notification' },
-    wait: false,
-  } as never)
-
-type Node = { type: string; key?: string; text?: string; props?: { key?: string; alt?: string; source?: string; width?: number; height?: number; props?: { label?: string; source?: string } } }
 const mount = ($: $T, surface: Surface) =>
   $.ui.mount({ plugin: 'savvy-progress', surface, component: 'Pane', requestId: 'savvy-agents', props: PROPS })
 
