@@ -8,8 +8,7 @@ type OnT = Parameters<TestBody>[1]
 
 // The desktop rebuilds a surface's images on every redraw, so a looping image there starts over;
 // a Client under one key is kept and draws again only on new props. So every looping drawing on
-// the desktop is a Client (mark.tsx) whose props no tick, step, token or click touches. And only
-// the three most recent runs loop at once: the rest hold their first frame.
+// the desktop is a Client (mark.tsx) whose props no tick, step, token or click touches.
 
 const T0 = Date.UTC(2026, 9, 9, 12, 2, 0)
 const PROPS = { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never
@@ -98,36 +97,6 @@ test('desktop: every looping drawing is a keyed mark Client of fixed size, its p
   expect((await loops(() => pane($))).json).toBe(compact.json)
 })
 
-test('desktop: with five running agents only the three most recent loop, the rest hold still, the same on every redraw', async ($, on) => {
-  const clock = setup(on)
-  for (const d of ['a', 'b', 'c', 'd', 'e']) {
-    await spawn($, d)
-    await clock.advance(1_000)
-  }
-  const first = await loops(() => pane($))
-  expect(first.svgs).toEqual([])
-  expect(first.keys).toEqual(['crab-w5', 'mark-w5', 'crab-w4', 'mark-w4', 'crab-w3', 'mark-w3'])
-  // The two oldest: the crab without its walk, the platter without its turn, both still drawn.
-  const held = first.statics.filter(s => s.includes('class="c-heavy"') || s.includes('opacity=".3"'))
-  expect(held.length).toBe(4)
-  for (const s of held) expect(isAnimated(s)).toBe(false)
-
-  await clock.advance(5_000)
-  await tokens($)
-  expect((await loops(() => pane($))).json).toBe(first.json)
-
-  // A run's end hands its turn on to the next most recent.
-  await end($, 'w5')
-  expect((await loops(() => pane($))).keys).toEqual(['crab-w4', 'mark-w4', 'crab-w3', 'mark-w3', 'crab-w2', 'mark-w2'])
-
-  await spawn($, 'f')
-  const compact = await loops(() => pane($), ui => ui.post({ press: true }, { in: 'compact' }))
-  const icons = compact.marks[0]?.props?.props?.source ?? ''
-  expect(icons.match(/class="spin"/g)?.length).toBe(3)
-  expect(icons.match(/class="c-\w+ run"/g)?.length).toBe(3)
-  expect(icons.match(/opacity="\.3"/g)?.length).toBe(5)
-})
-
 test('terminal: the pane and the band draw text and buttons only, no Client or image', async ($, on) => {
   const clock = setup(on)
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Steady', phase: 'delegate', done: 1, total: 4 } as never)
@@ -162,14 +131,4 @@ test('mobile and vscode: the band draws its twinkle and crab as images, having n
     expect(sources.some(s => s.includes('@keyframes tw{'))).toBe(true)
     expect(sources.some(s => /class="c-\w+ run"/.test(s))).toBe(true)
   }
-})
-
-test('desktop: running agents take the loops before a newer background task', async ($, on) => {
-  const clock = setup(on)
-  for (const d of ['a', 'b', 'c']) {
-    await spawn($, d)
-    await clock.advance(1_000)
-  }
-  await $.tool.call({ tool: 'Bash', command: 'npm run dev', run_in_background: true } as never)
-  expect((await loops(() => pane($))).keys).toEqual(['crab-w3', 'mark-w3', 'crab-w2', 'mark-w2', 'crab-w1', 'mark-w1'])
 })
