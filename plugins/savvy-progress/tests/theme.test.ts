@@ -1,6 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Plugin } from 'claude-code/testing'
 
+// Windows hands the hook C:\home\k\..., so compare with forward slashes and ignore the drive.
+const isThemeFile = (p: string) => p.replace(/\\/g, '/').endsWith('/home/k/.local/state/omarchy/current/theme/colors.toml')
+
 // The Agents pane takes its colours from Omarchy's colors.toml, follows a theme switch,
 // and keeps its own colours when the file is missing or goes away.
 test('theme: colors.toml recolours the pane; a missing file keeps the defaults', async ($, on) => {
@@ -8,14 +11,13 @@ test('theme: colors.toml recolours the pane; a missing file keeps the defaults',
   mock.env(on, { HOME: '/home/k' })
   let toml: string | null = null
   let mtimeMs = 0
-  const file = '/home/k/.local/state/omarchy/current/theme/colors.toml'
   const put = (next: string | null) => ((toml = next), (mtimeMs += 1))
   on('fs.stat', (_$, e) => {
-    if (toml !== null && e.path === file) return { value: { kind: 'file', mtimeMs } as never }
+    if (toml !== null && isThemeFile(e.path)) return { value: { kind: 'file', mtimeMs } as never }
     throw new Error('ENOENT')
   })
   on('fs.read', (_$, e) => {
-    if (toml !== null && e.path === file) return { value: toml }
+    if (toml !== null && isThemeFile(e.path)) return { value: toml }
     throw new Error('ENOENT')
   })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -84,10 +86,9 @@ const SKINS: Plugin = {
 test('theme: the skins theme wins over colors.toml, redraws when it changes, null falls back', { plugins: [SKINS] }, async ($, on) => {
   const clock = mock.clock(on)
   mock.env(on, { HOME: '/home/k' })
-  const file = '/home/k/.local/state/omarchy/current/theme/colors.toml'
   const TOKYO = 'accent = "#7aa2f7"\nselection = "#292e42"\nbackground = "#1a1b26"\nforeground = "#a9b1d6"\ndark_foreground = "#565f89"\nred = "#f7768e"\n'
   on('fs.stat', (_$, e) => {
-    if (e.path === file) return { value: { kind: 'file', mtimeMs: 1 } as never }
+    if (isThemeFile(e.path)) return { value: { kind: 'file', mtimeMs: 1 } as never }
     throw new Error('ENOENT')
   })
   on('fs.read', () => ({ value: TOKYO }))
@@ -158,9 +159,8 @@ test('theme: the skins theme wins over colors.toml, redraws when it changes, nul
 test('theme: a palette read overtaken by a skin switch does not overwrite the newer palette', { plugins: [SKINS] }, async ($, on) => {
   const clock = mock.clock(on)
   mock.env(on, { HOME: '/home/k' })
-  const file = '/home/k/.local/state/omarchy/current/theme/colors.toml'
   on('fs.stat', (_$, e) => {
-    if (e.path === file) return { value: { kind: 'file', mtimeMs: 1 } as never }
+    if (isThemeFile(e.path)) return { value: { kind: 'file', mtimeMs: 1 } as never }
     throw new Error('ENOENT')
   })
   on('fs.read', () => ({ value: 'accent = "#7aa2f7"\nforeground = "#a9b1d6"\n' }))
