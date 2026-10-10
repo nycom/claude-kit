@@ -25,7 +25,7 @@ const fill = async ($: $T) => {
 
 type Node = { type: string; key?: string; props?: { key?: string; module?: string; props?: { label?: string } } }
 const clientsOf = async (ui: { findAll: (q: object) => Promise<unknown[]> }) =>
-  ((await ui.findAll({ type: 'Client' })) as Node[]).map(n => [n.props?.key ?? n.key, n.props?.module, n.props?.props?.label])
+  ((await ui.findAll({ type: 'Client' })) as Node[]).filter(n => n.props?.module === 'hooks/controls.tsx').map(n => [n.props?.key ?? n.key, n.props?.module, n.props?.props?.label])
 
 // A Pane Button's press is resolved on the desktop by a handle every redraw replaces, so the
 // desktop presses it never land; a Client is addressed by its key.

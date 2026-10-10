@@ -30,21 +30,25 @@ const tokens = async ($: $T) => {
   for await (const _ of stream) void _
 }
 
-type Node = { type: string; text?: string; props?: { source?: string; alt?: string; width?: number; height?: number; position?: string }; children?: (Node | string)[] }
+type Img = { source?: string; alt?: string; width?: number; height?: number }
+type Node = { type: string; text?: string; props?: Img & { position?: string; module?: string; props?: Img }; children?: (Node | string)[] }
 const isAnimated = (src: string): boolean => /class="spin"|class="c-\w+ run"|@keyframes tw\{/.test(src)
 
-// Every Svg in drawing order, and the tree's shape with each Svg marked animated or data.
+// A drawing's image: an Svg's own props, or a mark Client's (mark.tsx draws its props as an Svg).
+const imgOf = (n: Node): Img | undefined => (n.type === 'Svg' ? n.props : n.props?.module === 'hooks/mark.tsx' ? n.props.props : undefined)
+
+// Every drawing in drawing order, and the tree's shape with each drawing marked animated or data.
 const draw = async ($: $T, mount: () => ReturnType<$T['ui']['mount']>) => {
   const ui = await mount()
-  const [root] = (await ui.findAll({})) as unknown as Node[]
-  const svgs = ((await ui.findAll({ type: 'Svg' })) as unknown as Node[]).map(n => n.props?.source ?? '')
+  const nodes = (await ui.findAll({})) as unknown as Node[]
+  const [root] = nodes
+  const svgs = nodes.map(imgOf).filter(img => img !== undefined).map(img => img.source ?? '')
   await ui.unmount()
-  const shape = (n: Node | string): unknown =>
-    typeof n === 'string'
-      ? 's'
-      : n.type === 'Svg'
-        ? `Svg:${isAnimated(n.props?.source ?? '') ? 'A' : 'D'}:${n.props?.width}x${n.props?.height}`
-        : [n.type, n.props?.position ?? '', (n.children ?? []).map(shape)]
+  const shape = (n: Node | string): unknown => {
+    if (typeof n === 'string') return 's'
+    const img = imgOf(n)
+    return img ? `${n.type}:${isAnimated(img.source ?? '') ? 'A' : 'D'}:${img.width}x${img.height}` : [n.type, n.props?.position ?? '', (n.children ?? []).map(shape)]
+  }
   return { animated: svgs.filter(isAnimated), data: svgs.filter(s => !isAnimated(s)), shape: JSON.stringify(shape(root as Node)) }
 }
 const pane = ($: $T) => () => $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: PROPS })
@@ -60,8 +64,8 @@ test('desktop pane: a running card and a background row keep byte-identical anim
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'savvy-careful', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   await $.tool.call({ tool: 'Bash', command: 'npm run dev', run_in_background: true } as never)
   const before = await draw($, pane($))
-  // The crab of the card and the platter of the background row; the card's platter is a Client.
-  expect(before.animated.length).toBe(2)
+  // The crab and the platter of the card and the platter of the background row.
+  expect(before.animated.length).toBe(3)
 
   await clock.advance(61_370)
   await $.tool.call({ tool: STEP, done: 1, total: 3, note: 'red test', agentId: 'w1' } as never)

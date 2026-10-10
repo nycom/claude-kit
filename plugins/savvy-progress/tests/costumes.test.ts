@@ -34,8 +34,11 @@ test('costumes: roles from the type name or the task, the tier costume otherwise
   for (const [type, description] of cases)
     await $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType: type, provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
-  const cards = (await ui.findAll({ type: 'Svg' })).map(s => String((s as { props: { source: string; alt: string } }).props.source))
-  // Each card draws its crab, then its data.
+  // Each card draws its crab, then its data; a looping crab is a mark Client, its source in its props.
+  type Node = { type: string; props?: { source?: string; module?: string; props?: { source?: string } } }
+  const cards = ((await ui.findAll({})) as unknown as Node[])
+    .map(n => (n.type === 'Svg' ? n.props?.source : n.props?.module === 'hooks/mark.tsx' ? n.props.props?.source : undefined))
+    .filter((src): src is string => src !== undefined)
   for (const [, description, costume] of cases) {
     const i = cards.findIndex(c => c.includes(`>${description}<`))
     expect(i).toBeGreaterThan(0)
