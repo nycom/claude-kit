@@ -20,6 +20,10 @@ const background = atom({ plugin: 'savvy-progress', key: 'background' } as const
 // twinkle) as `isInteractive`, a sandboxed frame rather than an image, to compare the two live.
 const ANIMATED_INTERACTIVE = false
 
+// Every looping image is redrawn on the page's main thread each frame: only the most recent runs
+// of the pane loop, the rest hold their first frame. Which ones changes only as runs start and end.
+const LOOPS = 3
+
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
 const PANE = 'savvy-agents'
@@ -659,8 +663,8 @@ const crabBody = (f: Fill, armFront = 0, armCls?: string): void => {
   f(21, 22, 2, 4, CLAY, 'lb')
 }
 
-// Pure CSS, run by the compositor; fixed offsets only, so the source never changes. Every
-// crab walks; each costume adds its prop's own motion on top.
+// Pure CSS in an image, so each frame is drawn on the page's main thread; fixed offsets only, so
+// the source never changes. Every crab walks; each costume adds its prop's own motion on top.
 const CRAB_CSS = `<style>
 .run .la{animation:st .5s steps(1) infinite}.run .lb{animation:st .5s steps(1) infinite -.25s}
 .run .bd{animation:bob .5s steps(1) infinite -.125s}
@@ -813,17 +817,18 @@ const crabTop = (costume: string, scale: number): number => {
 
 // A running mark is a 33⅓ platter: a faint ring, a marker and its trail turning once per 1.8s,
 // a fixed spindle. Each run's phase comes from its id, fixed for its life, so platters never
-// turn in step.
+// turn in step. A held platter keeps its first frame.
 const phaseOf = (id: string): string => {
   const hash = [...id].reduce((h, ch) => Math.imul(h ^ ch.charCodeAt(0), 16777619), 2166136261) >>> 0
   return `-${(((hash % 1000) / 1000) * 1.8).toFixed(3)}s`
 }
 
-const platter = (x: number, y: number, r: number, color: string, id: string): string =>
-  `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g class="spin" style="transform-origin:${x}px ${y}px;animation-delay:${phaseOf(id)}"><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
+const platter = (x: number, y: number, r: number, color: string, id: string, isTurning = true): string =>
+  `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g${isTurning ? ` class="spin" style="transform-origin:${x}px ${y}px;animation-delay:${phaseOf(id)}"` : ''}><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
 
 const statusMark = (x: number, y: number, status: string, color: string, id = ''): string => {
   if (status === 'running') return platter(x, y, 4.59, color, id)
+  if (status === 'held') return platter(x, y, 4.59, color, '', false)
   if (status === 'done') return `<path d="M${x - 5} ${y}l3.5 3.5 6.5-7" fill="none" stroke="#3B9C5F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
   if (status === 'failed') return `<path d="M${x - 4} ${y - 4}l8 8M${x + 4} ${y - 4}l-8 8" stroke="#D0453F" stroke-width="1.8" stroke-linecap="round"/>`
   return `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="#9a9a96" stroke-width="1.4"/><path d="M${x} ${y - 2.5}v2.8l1.8 1.2" fill="none" stroke="#9a9a96" stroke-width="1.4" stroke-linecap="round"/>`
@@ -839,10 +844,9 @@ const CARD_CRAB_W = 42
 const MARK_W = 16
 const rowLine = (W: number, h: number): string => `<line class="ln" x1="0" y1="${h - 0.5}" x2="${W}" y2="${h - 0.5}"/>`
 
-const crabColumnSvg = (a: AgentRun, h: number): string => {
+const crabColumnSvg = (a: AgentRun, h: number, isWalking: boolean): string => {
   const costume = costumeOf(a)
   const tint = colorOf(tierOf(a.type))
-  const isWalking = a.status === 'running'
   return constant(`crab|${costume}|${tint}|${isWalking}|${h}`, () => svg(CARD_CRAB_W, h, `${CRAB_CSS}${crab(0, 14, costume, false, isWalking, CRAB_SCALE, tint)}\n${rowLine(CARD_CRAB_W, h)}`))
 }
 
@@ -962,11 +966,11 @@ ${statusMark(W - 8, 16, 'planned', color)}
 
 // Compact view: the crabs, each with its platter or cross, are one constant drawing, as wide as
 // they are plus the last platter's overhang; the count of the rest and the totals sit beside it.
-const compactIcons = (W: number, list: AgentRun[], planned: Planned[]) => {
+const compactIcons = (W: number, list: AgentRun[], planned: Planned[], isLooping: (a: AgentRun) => boolean) => {
   const icons = [
-    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false, id: a.id })),
-    ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false, id: a.id })),
-    ...planned.map(p => ({ k: p.tier in TIER_COLOR ? p.tier : 'other', c: colorOf(p.tier), s: 'planned', dim: true, id: '' })),
+    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false, id: a.id, run: isLooping(a) })),
+    ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false, id: a.id, run: false })),
+    ...planned.map(p => ({ k: p.tier in TIER_COLOR ? p.tier : 'other', c: colorOf(p.tier), s: 'planned', dim: true, id: '', run: false })),
   ]
   const shown = icons.slice(0, Math.max(1, Math.floor((W - 150) / 36)))
   return { shown, more: icons.length - shown.length, width: shown.length * 36 + 2 }
@@ -974,7 +978,7 @@ const compactIcons = (W: number, list: AgentRun[], planned: Planned[]) => {
 
 const compactIconsSvg = (shown: ReturnType<typeof compactIcons>['shown']): string => {
   const W = shown.length * 36 + 2
-  return constant(`icons|${JSON.stringify(shown.map(ic => (ic.s === 'running' ? ic : { ...ic, id: '' })))}`, () =>
+  return constant(`icons|${JSON.stringify(shown.map(ic => (ic.run ? ic : { ...ic, id: '' })))}`, () =>
     svg(
       W,
       32,
@@ -982,8 +986,8 @@ const compactIconsSvg = (shown: ReturnType<typeof compactIcons>['shown']): strin
         shown
           .map(
             (ic, i) =>
-              crab(i * 36, 0, ic.k, ic.dim, ic.s === 'running', CRAB_SCALE, ic.c) +
-              (ic.s === 'running' ? platter(i * 36 + 32, 5.5, 3.94, ic.c, ic.id) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
+              crab(i * 36, 0, ic.k, ic.dim, ic.run, CRAB_SCALE, ic.c) +
+              (ic.s === 'running' ? platter(i * 36 + 32, 5.5, 3.94, ic.c, ic.id, ic.run) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
           )
           .join(''),
     ),
@@ -1547,19 +1551,25 @@ export const register: Register = (on, options) => {
         </Text>
       )
       const statusWord = (status: string) => (status === 'running' ? s.isRunning : status === 'failed' ? s.isFailed : status === 'planned' ? s.isPlanned : s.isFinished)
-      // The constant drawings (see `constant`) take the experiment's `isInteractive`; a running
-      // card's platter is a Client (mark.tsx), kept across redraws by its run's key.
+      // The most recent running agents loop, then the most recent background tasks; the rest hold.
+      // Agents first: a long-lived server, or a task reconcile found (started "now"), is not work.
+      const recent = <T extends { startedAt: number }>(xs: T[]) => [...xs].sort((x, y) => y.startedAt - x.startedAt)
+      const looping = new Set<AgentRun | BackgroundTask>(
+        [...recent(running), ...recent(bg.filter(x => x.status === 'running'))].slice(0, LOOPS),
+      )
+      // The constant drawings (see `constant`) take the experiment's `isInteractive`. A looping
+      // one is a Client (mark.tsx), kept across redraws by its run's key; a still one, an image.
+      const drawing = (key: string, isLooping: boolean, props: MarkProps) =>
+        isLooping ? <Client key={key} module="./mark.tsx" props={props} /> : <Svg key={key} {...props} />
       const card = (a: AgentRun) => {
         const cardH = agentHeight(a)
+        const isLooping = looping.has(a)
+        const mark = a.status === 'running' && !isLooping ? 'held' : a.status
         return (
           <Box key={a.id} flexDirection="row">
-            <Svg source={crabColumnSvg(a, cardH)} alt={s.agent} width={CARD_CRAB_W} height={cardH} isInteractive={ANIMATED_INTERACTIVE} />
+            {drawing(`crab-${a.id}`, isLooping, { source: crabColumnSvg(a, cardH, isLooping), alt: s.agent, width: CARD_CRAB_W, height: cardH, isInteractive: ANIMATED_INTERACTIVE })}
             <Svg source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W - CARD_CRAB_W - MARK_W} height={cardH} />
-            {a.status === 'running' ? (
-              <Client key={`mark-${a.id}`} module="./mark.tsx" props={{ source: markColumnSvg(cardH, 16, a.status, colorOf(tierOf(a.type)), a.id), alt: statusWord(a.status), width: MARK_W, height: cardH, isInteractive: ANIMATED_INTERACTIVE } satisfies MarkProps} />
-            ) : (
-              <Svg source={markColumnSvg(cardH, 16, a.status, colorOf(tierOf(a.type)), a.id)} alt={statusWord(a.status)} width={MARK_W} height={cardH} isInteractive={ANIMATED_INTERACTIVE} />
-            )}
+            {drawing(`mark-${a.id}`, isLooping, { source: markColumnSvg(cardH, 16, mark, colorOf(tierOf(a.type)), a.id), alt: statusWord(a.status), width: MARK_W, height: cardH, isInteractive: ANIMATED_INTERACTIVE })}
           </Box>
         )
       }
@@ -1568,18 +1578,24 @@ export const register: Register = (on, options) => {
         <Box key={`bg-${x.id}`} flexDirection="row" alignItems="center" gap={1}>
           <Box flexDirection="row">
             <Svg source={bgSvg(W - 56, x, at)} alt={`${bgTitle(x)}: ${bgMeta(x, at)}${x.status === 'failed' ? `, ${s.isFailed}` : ''}`} width={W - 56 - MARK_W} height={BG_H} />
-            <Svg source={markColumnSvg(BG_H, BG_H / 2, bgMark(x), accentOf(), x.id)} alt={statusWord(bgMark(x))} width={MARK_W} height={BG_H} isInteractive={ANIMATED_INTERACTIVE} />
+            {drawing(`bgmark-${x.id}`, looping.has(x), {
+              source: markColumnSvg(BG_H, BG_H / 2, x.status === 'running' && !looping.has(x) ? 'held' : bgMark(x), accentOf(), x.id),
+              alt: statusWord(bgMark(x)),
+              width: MARK_W,
+              height: BG_H,
+              isInteractive: ANIMATED_INTERACTIVE,
+            })}
           </Box>
           {isActive(x) ? stopButton(x) : null}
         </Box>
       )
 
       if (p.isCompact) {
-        const icons = compactIcons(W, list, planned)
+        const icons = compactIcons(W, list, planned, a => looping.has(a))
         return (
           <Box flexDirection="column" gap={1}>
             <Box flexDirection="row">
-              <Svg source={compactIconsSvg(icons.shown)} alt={`${list.length} ${s.agentsCount}`} width={icons.width} height={32} isInteractive={ANIMATED_INTERACTIVE} />
+              <Client key="icons" module="./mark.tsx" props={{ source: compactIconsSvg(icons.shown), alt: `${list.length} ${s.agentsCount}`, width: icons.width, height: 32, isInteractive: ANIMATED_INTERACTIVE } satisfies MarkProps} />
               <Svg source={compactSvg(W - icons.width, icons.more, t)} alt={summary} width={W - icons.width} height={32} />
             </Box>
             {flagged.map(a => (
@@ -1792,24 +1808,27 @@ export const register: Register = (on, options) => {
 
     if (e.surface !== 'terminal' && 'Svg' in ui) {
       const { Svg } = ui
+      // A looping drawing is a mark Client where the surface has one (the desktop), else an image.
+      const Client = e.surface === 'desktop' && 'Client' in ui ? ui.Client : null
+      const loop = (key: string, props: MarkProps) => (Client ? <Client key={key} module="./mark.tsx" props={props} /> : <Svg key={key} {...props} />)
       // About 8 CSS px per reported column; the rest is the count, the dismiss
       // and their gaps. No floor above the slot: a row wider than it would wrap.
       const width = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 96 - (flagged ? pillW(chipText) + 8 : 0)))
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" alignItems="center" gap={1}>
-            {/* The bar's layers share one origin; the twinkle (constant) sits between the fill and the pill. */}
+            {/* The bar's layers share one origin; the twinkle (constant, see `loop`) sits between the fill and the pill. */}
             <Box flexDirection="row">
               <Box>
                 <Svg source={bandBaseSvg(f, width)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width - CRAB_W} height={H} />
                 <Box position="absolute" top={0} left={0}>
-                  <Svg source={bandTwinkleSvg(f, width)} alt={f.title} width={width - CRAB_W} height={H} isInteractive={ANIMATED_INTERACTIVE} />
+                  {loop('band-twinkle', { source: bandTwinkleSvg(f, width), alt: f.title, width: width - CRAB_W, height: H, isInteractive: ANIMATED_INTERACTIVE })}
                 </Box>
                 <Box position="absolute" top={0} left={0}>
                   <Svg source={bandTopSvg(f, width)} alt={label(f)} width={width - CRAB_W} height={H} />
                 </Box>
               </Box>
-              <Svg source={bandCrabSvg(isWorking)} alt={tr().agent} width={CRAB_W} height={H} isInteractive={ANIMATED_INTERACTIVE} />
+              {loop('band-crab', { source: bandCrabSvg(isWorking), alt: tr().agent, width: CRAB_W, height: H, isInteractive: ANIMATED_INTERACTIVE })}
             </Box>
             {chip}
             {crewButton}

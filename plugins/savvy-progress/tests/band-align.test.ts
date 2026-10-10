@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { imgOf, MARK } from './drawing'
+
 const STEP = 'mcp__savvy-progress__step'
 
 // The desktop band row: the host draws the count and the dismiss as Buttons beside the row's
@@ -15,7 +17,11 @@ test('desktop band: dot, bar, pill, crab and the attention chip share one centre
   await $.tool.call({ tool: STEP, done: 1, blocked: 'Postgres or SQLite?', agentId: 'w1' } as never)
 
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
-  const svgs = (await ui.findAll({ type: 'Svg' })) as unknown as { props: { source: string; height: number; alt: string } }[]
+  type Img = { source: string; height: number; alt: string }
+  const svgs = ((await ui.findAll({})) as unknown as { type: string; props?: Img & { module?: string; props?: Img } }[]).flatMap(n => {
+    const props = imgOf(n)
+    return props ? [{ props }] : []
+  })
   await ui.unmount()
   // The bar's layers (the fill, the twinkle, the pill) share one origin; the crab is beside them.
   const row = svgs.find(s => s.props.alt.startsWith('Background tasks'))
@@ -78,10 +84,12 @@ test('desktop background rows: the platter and every other mark sit on the Stop 
   await notify('b2', 'completed')
   await notify('b3', 'failed')
 
-  type Node = { type: string; props: { flexDirection?: string; alignItems?: string; alt?: string; source?: string; height?: number; props?: { label?: string } }; children?: Node[] }
+  type Node = { type: string; props: { flexDirection?: string; alignItems?: string; alt?: string; source?: string; height?: number; module?: string; props?: { label?: string; alt?: string; source?: string; height?: number } }; children?: Node[] }
+  // A looping mark is a mark Client: its image's props are the Client's.
+  const img = (n?: Node) => (n?.props.module === MARK ? { ...n, props: { ...n.props, ...n.props.props } } : n)
   const ui = await $.ui.mount({ plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', surface: 'desktop', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
   // A row: its drawings (the data, then the mark) in a row Box, then the Stop control.
-  const rows = ((await ui.findAll({ type: 'Box' })) as unknown as Node[]).filter(b => b.props.alignItems === 'center' && b.children?.[0]?.children?.[1]?.props.alt?.length)
+  const rows = ((await ui.findAll({ type: 'Box' })) as unknown as Node[]).filter(b => b.props.alignItems === 'center' && img(b.children?.[0]?.children?.[1])?.props.alt?.length)
   await ui.unmount()
   expect(rows.length).toBe(4)
 
@@ -89,9 +97,10 @@ test('desktop background rows: the platter and every other mark sit on the Stop 
   const marks: Record<string, number> = {}
   for (const row of rows) {
     const [drawings, button] = row.children as Node[]
-    const [data, img] = (drawings?.children ?? []) as Node[]
-    expect(img.props.height).toBe(data.props.height)
-    const src = img.props.source ?? ''
+    const [data, markNode] = (drawings?.children ?? []) as Node[]
+    const mark = img(markNode) as Node
+    expect(mark.props.height).toBe(data.props.height)
+    const src = mark.props.source ?? ''
     const ring = /<circle cx="[\d.]+" cy="([\d.]+)" r="[\d.]+" fill="none" stroke="[^"]+" opacity=".3"/.exec(src)
     const done = /<path d="M[\d.]+ ([\d.]+)l3.5 3.5 6.5-7"/.exec(src)
     const failed = /<path d="M[\d.]+ ([\d.]+)l8 8M[\d.]+ [\d.]+l-8 8"/.exec(src)
@@ -103,11 +112,11 @@ test('desktop background rows: the platter and every other mark sit on the Stop 
       expect(button.type).toBe('Client')
       expect(button.props.props?.label).toBe('■')
       expect(row.props.alignItems).toBe('center')
-      const buttonCentre = Math.max(img.props.height ?? 0, BAND_LINE) / 2
+      const buttonCentre = Math.max(mark.props.height ?? 0, BAND_LINE) / 2
       expect(Math.abs(y - buttonCentre)).toBeLessThan(0.5)
     } else {
       // An Ended row has no Stop button; its mark keeps the active rows' line.
-      expect(Math.abs(y - (img.props.height ?? 0) / 2)).toBeLessThan(0.5)
+      expect(Math.abs(y - (mark.props.height ?? 0) / 2)).toBeLessThan(0.5)
     }
   }
   expect(Object.keys(marks).sort()).toEqual(['done', 'failed', 'planned', 'running'])
