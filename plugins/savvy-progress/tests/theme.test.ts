@@ -113,8 +113,8 @@ test('theme: the skins theme wins over colors.toml, redraws when it changes, nul
   }
   expect(await drawn(pane)).toContain('.t{fill:#a9b1d6}')
 
-  // skins' dim is the text tone savvy calls muted; its muted is a border tone, unused.
-  const ROSE = { mode: 'dark', accent: '#c4a7e7', foreground: '#e0def4', dim: '#908caa', muted: '#6e6a86', red: '#eb6f92', selection: '#403d52', background: '#191724' }
+  // skins' dim is the text tone savvy calls muted.
+  const ROSE = { mode: 'dark', accent: '#c4a7e7', foreground: '#e0def4', dim: '#908caa', red: '#eb6f92', selection: '#403d52', background: '#191724' }
   await skin(ROSE)
   for (const ui of [pane, band]) {
     const rose = await drawn(ui)
@@ -126,15 +126,21 @@ test('theme: the skins theme wins over colors.toml, redraws when it changes, nul
   expect(rose).toContain('.k{fill:#403d52}')
   expect(rose).toContain('.rt,.tile{fill:#191724}')
   expect(rose).toContain('.r{fill:#eb6f92}')
-  expect(rose).not.toContain('#6e6a86')
 
-  // A switch redraws the mounted pane; a light skin keeps the defaults, as a light colors.toml does.
+  // A switch redraws the mounted pane; a light skin draws no dark CSS but keeps colors.toml's accent.
   await skin({ ...ROSE, foreground: '#ffffff' })
   expect(await drawn(pane)).toContain('.t{fill:#ffffff}')
   await skin({ ...ROSE, mode: 'light' })
   const light = await drawn(pane)
   expect(light).not.toContain('<style>@media (prefers-color-scheme: dark){')
   expect(light).not.toContain('#a9b1d6')
+  // The terminal band keeps the file's accent (the skin's is not applied).
+  const term = await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+  await clock.settle()
+  const termDrawn = JSON.stringify(await term.drawn())
+  expect(termDrawn).toContain('#7aa2f7')
+  expect(termDrawn).not.toContain('#c4a7e7')
+  await term.unmount()
 
   // The skin off: colors.toml again.
   await skin(null)

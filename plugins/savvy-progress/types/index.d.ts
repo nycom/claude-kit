@@ -69,8 +69,8 @@ export type Panel = {
 /** Omarchy colors.toml entries by key; absent keys keep the default colour. */
 export type Palette = Partial<Record<'foreground' | 'accent' | 'muted' | 'red' | 'selection' | 'background', string>>
 
-/** skins' published theme (its contract, declared here: savvy reads it without depending on skins); `dim` is secondary text, `muted` a border tone. */
-export type PanelTheme = { mode: 'dark' | 'light'; accent: string; foreground: string; dim: string; muted: string; red: string; selection: string; background: string }
+/** skins' published theme (its contract, declared here: savvy reads it without depending on skins); only `dim` (secondary text) is read. */
+export type PanelTheme = { mode: 'dark' | 'light'; accent: string; foreground: string; dim: string; red: string; selection: string; background: string }
 
 declare module 'claude-code' {
   interface PluginState {
