@@ -82,6 +82,8 @@ declare module 'claude-code' {
       now: number
       theme: Palette | null
       background: BackgroundTask[]
+      /** The last /status block: its `STATUS ` line and the first LEFT item, "" when none. */
+      status: { header: string; gate: string } | null
     }
   }
 }

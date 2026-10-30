@@ -35,6 +35,7 @@ A toast fires on a crossing only: the failed count reaching three, or a new ques
 - On the desktop the Ended group shows the 20 that ended last, agents and background rows alike, and a **+K more ended** line for the rest. The desktop drops a whole panel that grows too large, so when the cards would not fit, the panel draws as many as fit and one **+N more running** (or **+K more ended**) line; the terminal lists everything.
 - Text colours meet 4.5:1 on the light and dark host backgrounds: per-theme tier colours, darker meta and percent text, dark labels on the coloured pills, white on the red flag.
 - A planned task of the `medium` tier is labelled Sonnet.
+- After a turn that ends with a `/status` block, the header shows its `STATUS` line and `next gate: <first LEFT item>` (no gate line when nothing is left); a later turn without a block keeps it.
 
 ## Background
 

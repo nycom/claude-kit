@@ -15,6 +15,7 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
 const theme = atom({ plugin: 'savvy-progress', key: 'theme' } as const, null)
 const background = atom({ plugin: 'savvy-progress', key: 'background' } as const, [])
+const status = atom({ plugin: 'savvy-progress', key: 'status' } as const, null)
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
@@ -924,24 +925,30 @@ const markColumnSvg = (h: number, y: number, status: string, color: string, id: 
   constant(`mark|${h}|${y}|${status}|${color}|${status === 'running' ? id : ''}`, () => svg(MARK_W, h, `${statusMark(MARK_W / 2, y, status, color, id)}\n${rowLine(MARK_W, h)}`))
 
 // The pane's own title already says "Agents": the header names the flow, if any.
-const headerSvg = (W: number, title: string, t: ReturnType<typeof totals>): string => {
+// Under it, the last /status block's header and next gate, if any.
+const headerSvg = (W: number, title: string, lines: string[], t: ReturnType<typeof totals>): string => {
   const s = tr()
   const gap = 6
   const tw = (W - gap * 2) / 3
-  const top = title ? 28 : 0
+  const top = headerHeight(title, lines) - 44
+  const y0 = title ? 35 : 15
   const tile = (i: number, k: string, v: string) =>
     `<rect class="tile" x="${i * (tw + gap)}" y="${top}" width="${tw}" height="40" rx="8"/>
 <text class="s tl" x="${i * (tw + gap) + 9}" y="${top + 16}" font-family="${FONT}" font-size="11">${k}</text>
 <text class="t" x="${i * (tw + gap) + 9}" y="${top + 33}" font-family="${FONT}" font-size="15" font-weight="600" font-variant-numeric="tabular-nums">${v}</text>`
   return svg(
     W,
-    headerHeight(title),
+    headerHeight(title, lines),
     `${title ? `<text class="t" x="0" y="15" font-family="${FONT}" font-size="14" font-weight="600">${xml(fitText(title, 14, W))}</text>` : ''}
+${lines.map((l, i) => `<text class="s" x="0" y="${y0 + i * 20}" font-family="${FONT}" font-size="12">${xml(fitText(l, 12, W))}</text>`).join('')}
 ${tile(0, s.cost, '≈' + fmtCost(t.cost))}${tile(1, s.tokens, fmtTokens(t.tokens))}${tile(2, s.time, fmtTime(t.time))}`,
   )
 }
 
-const headerHeight = (title: string): number => (title ? 72 : 44)
+const headerHeight = (title: string, lines: string[]): number => {
+  const n = (title ? 1 : 0) + lines.length
+  return n ? 44 + n * 20 + 8 : 44
+}
 
 // The task's own progress when the worker reports steps; a finished run is full.
 const progressOf = (a: AgentRun): number | null => {
@@ -1213,6 +1220,17 @@ const oneLine = (v: unknown): string =>
     .replace(/\s+/g, ' ')
     .trim()
 
+// The /status skill's block in a turn's last message: its `STATUS ` line and the first item
+// under LEFT ('' when that is "nothing left" or there is no LEFT); null when there is no block.
+const statusOf = (message: string): { header: string; gate: string } | null => {
+  const lines = message.split('\n')
+  const at = lines.findIndex(l => l.startsWith('STATUS '))
+  if (at < 0) return null
+  const left = lines.findIndex((l, i) => i > at && l.trim() === 'LEFT')
+  const gate = left < 0 ? '' : oneLine(lines.slice(left + 1).find(l => /^\s*1\.\s/.test(l))).replace(/^1\.\s*/, '')
+  return { header: oneLine(lines[at]), gate: gate === 'nothing left' ? '' : gate }
+}
+
 // The engine clips a cron's prompt to 1000 chars and appends "… [+N chars]": true when
 // `listed` is `prompt`, whole or clipped.
 const isClipOf = (listed: string, prompt: string): boolean => {
@@ -1467,6 +1485,9 @@ export const register: Register = (on, options) => {
   // At each stop the engine lists what is in flight: add what was missed, end what is gone.
   on('classic.Stop', async ($, e, next) => {
     const result = await next(e)
+    // A stop without a /status block keeps the last one.
+    const block = statusOf(e.last_assistant_message ?? '')
+    if (block) await update($, status, () => block).catch(() => undefined)
     const crons = e.session_crons
     if (!e.background_tasks || !crons) return result
     const live = e.background_tasks.filter(t => t.type === 'shell' || t.type === 'monitor')
@@ -1636,6 +1657,8 @@ export const register: Register = (on, options) => {
     const t = totals(list, at)
     // The pane's title says "Agents"; inside, only the flow's own name.
     const title = f && !f.isFinished ? f.title : ''
+    const st = await read($, status)
+    const statusLines = st ? [st.header, ...(st.gate ? [`next gate: ${st.gate}`] : [])] : []
 
     const doneLabel = `${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length + bgEnded.length}`
     const toggleCompact = (
@@ -1719,7 +1742,8 @@ export const register: Register = (on, options) => {
           </Box>
         )
       }
-      const header = <Svg source={headerSvg(W, title, t)} alt={title ? `${title}: ${summary}` : summary} width={W} height={headerHeight(title)} />
+      const named = [title, ...statusLines].filter(Boolean).join(', ')
+      const header = <Svg source={headerSvg(W, title, statusLines, t)} alt={named ? `${named}: ${summary}` : summary} width={W} height={headerHeight(title, statusLines)} />
       const plannedRows = planned.map(pl => (
         <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
       ))
@@ -1834,6 +1858,11 @@ export const register: Register = (on, options) => {
           </Text>
           {toggleCompact}
         </Box>
+        {statusLines.map(l => (
+          <Text key={l} wrap="truncate-end">
+            {l}
+          </Text>
+        ))}
         <Text dimColor>
           ≈{fmtCost(t.cost)} · {fmtTokens(t.tokens)} {s.tokensWord} · {fmtTime(t.time)}
         </Text>
