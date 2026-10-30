@@ -196,6 +196,7 @@ const STRINGS = {
     moreRunning: (n: number) => `+${n} more running`,
     moreEnded: (n: number) => `+${n} more ended`,
     stopFailed: (what: string, err: string) => `could not stop ${clip(what, 60)}: ${err}`,
+    nextGate: 'next gate',
     kinds: { shell: 'shell', monitor: 'monitor', cron: 'scheduled', wakeup: 'loop wakeup' },
   },
   ru: {
@@ -236,6 +237,7 @@ const STRINGS = {
     moreRunning: (n: number) => `+${n} ещё работают`,
     moreEnded: (n: number) => `+${n} ещё закончили`,
     stopFailed: (what: string, err: string) => `не удалось остановить ${clip(what, 60)}: ${err}`,
+    nextGate: 'следующий шаг',
     kinds: { shell: 'команда', monitor: 'монитор', cron: 'по расписанию', wakeup: 'пробуждение цикла' },
   },
 } as const
@@ -1227,8 +1229,11 @@ const statusOf = (message: string): { header: string; gate: string } | null => {
   const at = lines.findIndex(l => l.startsWith('STATUS '))
   if (at < 0) return null
   const left = lines.findIndex((l, i) => i > at && l.trim() === 'LEFT')
-  const gate = left < 0 ? '' : oneLine(lines.slice(left + 1).find(l => /^\s*1\.\s/.test(l))).replace(/^1\.\s*/, '')
-  return { header: oneLine(lines[at]), gate: gate === 'nothing left' ? '' : gate }
+  // LEFT ends at a blank line or the next all-caps section header.
+  const after = left < 0 ? [] : lines.slice(left + 1)
+  const end = after.findIndex(l => !l.trim() || /^[A-Z][A-Z ]*$/.test(l.trim()))
+  const gate = oneLine(after.slice(0, end < 0 ? undefined : end).find(l => /^\s*1\.\s/.test(l))).replace(/^1\.\s*/, '')
+  return { header: clip(oneLine(lines[at]), 200), gate: /^nothing left\b/i.test(gate) ? '' : clip(gate, 200) }
 }
 
 // The engine clips a cron's prompt to 1000 chars and appends "… [+N chars]": true when
@@ -1658,7 +1663,7 @@ export const register: Register = (on, options) => {
     // The pane's title says "Agents"; inside, only the flow's own name.
     const title = f && !f.isFinished ? f.title : ''
     const st = await read($, status)
-    const statusLines = st ? [st.header, ...(st.gate ? [`next gate: ${st.gate}`] : [])] : []
+    const statusLines = st ? [st.header, ...(st.gate ? [`${s.nextGate}: ${st.gate}`] : [])] : []
 
     const doneLabel = `${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length + bgEnded.length}`
     const toggleCompact = (
@@ -1735,6 +1740,9 @@ export const register: Register = (on, options) => {
               <Client key="icons" module="./mark.tsx" props={{ source: compactIconsSvg(icons.shown), alt: `${list.length} ${s.agentsCount}`, width: icons.width, height: 32 } satisfies MarkProps} />
               <Svg source={compactSvg(W - icons.width, icons.more, t)} alt={summary} width={W - icons.width} height={32} />
             </Box>
+            {statusLines.map(l => (
+              <Text key={l} wrap="truncate-end">{l}</Text>
+            ))}
             {flagged.map(a => (
               <Svg key={`flag-${a.id}`} source={flagSvg(W, a)} alt={agentAlt(a)} width={W} height={20} />
             ))}
