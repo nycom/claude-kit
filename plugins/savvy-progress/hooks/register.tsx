@@ -405,93 +405,56 @@ const constant = (key: string, draw: () => string): string => {
   return source
 }
 
-// The band row is the bar's layers stacked at one origin, all W - CRAB_W wide, and the crab
-// beside them. The title takes what it needs, up to 40% of the row; the bar takes the rest.
-const barOf = (f: Flow, W: number) => {
-  const title = fitText(f.title, 13, Math.max(60, W * 0.4))
-  const x = Math.round(16 + textWidth(title, 13) + 12)
-  return { title, x, w: Math.max(60, W - x - 12 - CRAB_W), y: (H - BAR_H) / 2 }
-}
+// The desktop band's bar is Boxes the app lays out (see the AbovePrompt hook); these are its few
+// images. The app gives a mod no light/dark signal, so the empty track is a grey wash that reads on
+// both, or a dark skin's own selection colour.
+const trackColor = (): string => (pal?.selection && !lightSkin ? pal.selection : '#80808033')
+const trackPaint = (): string => (pal?.selection && !lightSkin ? `fill="${pal.selection}"` : 'fill="#808080" fill-opacity="0.2"')
+// Handed to workers: the fill's colour, lighter.
+const runColor = (color: string): string => (/^#[0-9a-f]{6}$/i.test(color) ? `${color}4d` : color)
+const BAR_Y = (H - BAR_H) / 2
 
-const bandSvg = (W: number, body: string): string =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${W - CRAB_W}" height="${H}" viewBox="0 0 ${W - CRAB_W} ${H}">
-<style>
-.t{fill:#1f1f1f}.m{fill:#6b6b68}.k{fill:#e4e4e2}.tk{fill:#b4b4b0}
-@media (prefers-color-scheme: dark){.t{fill:#ececec}.m{fill:#9a9a9a}.k{fill:#2c2c2c}.tk{fill:#5a5a5a}}
-</style>${themeCss()}${body}</svg>`
-
-const barClip = (w: number): string => `<defs><clipPath id="c"><rect x="0" y="0" width="${w}" height="${BAR_H}" rx="${BAR_H / 2}"/></clipPath></defs>`
-
-// Bottom layer: the dot, the title, the track and its solid fill; handed-to-workers is a lighter segment.
-const bandBaseSvg = (f: Flow, W: number): string => {
-  const bar = barOf(f, W)
-  const color = f.isFinished ? DONE : accentOf()
-  const fillW = Math.round(bar.w * ratio(f))
-  const runW = f.total ? Math.round((bar.w * Math.min(f.total, f.done + f.running)) / f.total) : 0
-  return bandSvg(
+// The dot, the title and the bar's rounded left end, in the fill's colour.
+const bandTitleText = (f: Flow, maxW: number): string => fitText(f.title, 13, maxW)
+const bandTitleW = (f: Flow, maxW: number): number => Math.round(16 + textWidth(bandTitleText(f, maxW), 13) + 12 + BAR_H / 2)
+const bandTitleSvg = (f: Flow, maxW: number, color: string): string => {
+  const W = bandTitleW(f, maxW)
+  return svg(
     W,
-    `${barClip(bar.w)}
-<circle cx="5" cy="${H / 2}" r="4" fill="${color}"/>
-<text class="t" x="16" y="${H / 2 + 4.5}" font-family="${FONT}" font-size="13" font-weight="500">${xml(bar.title)}</text>
-<g transform="translate(${bar.x},${bar.y})">
-<rect class="k" width="${bar.w}" height="${BAR_H}" rx="${BAR_H / 2}"/>
-<g clip-path="url(#c)">
-${runW > fillW ? `<rect x="${fillW}" width="${runW - fillW}" height="${BAR_H}" fill="${color}" opacity="0.3"/>` : ''}
-<rect width="${fillW}" height="${BAR_H}" fill="${color}"/>
-</g>
-</g>`,
+    H,
+    `<circle cx="5" cy="${H / 2}" r="4" fill="${color}"/>
+<text class="t" x="16" y="${H / 2 + 4.5}" font-family="${FONT}" font-size="13" font-weight="500">${xml(bandTitleText(f, maxW))}</text>
+<path d="M${W} ${BAR_Y}A${BAR_H / 2} ${BAR_H / 2} 0 0 0 ${W} ${BAR_Y + BAR_H}Z" fill="${color}"/>`,
   )
 }
 
-// Middle layer, animated while work runs: a soft glow at the fill's leading edge. One constant
-// drawing, the same for every flow, so the clock, tokens, steps and done never restart it; a Box
-// offset (in cells, about 8 CSS px each) moves it to the head.
+// The phase pill at the fill's head: square where the fill meets it, round where the track starts.
+const bandPillW = (text: string): number => Math.round(18 + text.length * 6.6)
+const bandPillSvg = (text: string, color: string, isFinished: boolean): string => {
+  const W = bandPillW(text)
+  return svg(
+    W,
+    BAR_H,
+    `<rect width="${W}" height="${BAR_H}" ${trackPaint()}/>
+<path d="M0 0H${W - BAR_H / 2}A${BAR_H / 2} ${BAR_H / 2} 0 0 1 ${W - BAR_H / 2} ${BAR_H}H0Z" fill="${color}"/>
+<text x="${(W - 4) / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${isFinished ? '#0f2a1c' : '#1f1e1d'}">${xml(text)}</text>`,
+  )
+}
+
+// The bar's rounded right end: the track's colour, or the fill's once the bar is full.
+const bandCapSvg = (fill: string | null): string =>
+  svg(BAR_H / 2, BAR_H, `<path d="M0 0A${BAR_H / 2} ${BAR_H / 2} 0 0 1 0 ${BAR_H}Z" ${fill ? `fill="${fill}"` : trackPaint()}/>`)
+
+// Animated while work runs: a soft glow just past the pill. One constant drawing, the same for
+// every flow, so the clock, tokens, steps and done never restart it; the layout moves it.
 const GLOW_W = 24
 const bandGlowSvg = (): string =>
-  constant('band-glow', () =>
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${GLOW_W}" height="${H}" viewBox="0 0 ${GLOW_W} ${H}">
+  constant(`band-glow|${trackPaint()}`, () =>
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${GLOW_W}" height="${BAR_H}" viewBox="0 0 ${GLOW_W} ${BAR_H}">
 <defs><radialGradient id="g"><stop offset="0" stop-color="#ffffff" stop-opacity=".6"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></radialGradient></defs>
 <style>.gl{animation:gl 1.6s ease-in-out infinite}@keyframes gl{0%,100%{opacity:.25}50%{opacity:1}}@media (prefers-reduced-motion: reduce){.gl{animation:none}}</style>
-<rect class="gl" y="${(H - BAR_H) / 2}" width="${GLOW_W}" height="${BAR_H}" rx="${BAR_H / 2}" fill="url(#g)"/></svg>`,
+<rect width="${GLOW_W}" height="${BAR_H}" ${trackPaint()}/><rect class="gl" width="${GLOW_W}" height="${BAR_H}" fill="url(#g)"/></svg>`,
   )
-// The phase pill rides the fill's head; the top layer draws it, the glow sits just past it.
-const pillOf = (f: Flow, W: number) => {
-  const bar = barOf(f, W)
-  const fillW = Math.round(bar.w * ratio(f))
-  const bandPillW = Math.round(18 + label(f).length * 6.6)
-  return { pillX: Math.max(0, Math.min(bar.w - bandPillW, fillW - bandPillW)), bandPillW }
-}
-// Where the glow sits, in cells from the row's left edge: at the pill's right edge (the pill is
-// opaque and drawn over it), inside the bar.
-const glowLeft = (f: Flow, W: number): number => {
-  const bar = barOf(f, W)
-  const { pillX, bandPillW } = pillOf(f, W)
-  const at = Math.min(bar.x + bar.w - GLOW_W, bar.x + pillX + bandPillW - 4)
-  return Math.max(0, Math.round(at / 8))
-}
-
-// Top layer, over the glow: the task ticks and the pill with the phase.
-const bandTopSvg = (f: Flow, W: number): string => {
-  const bar = barOf(f, W)
-  const color = f.isFinished ? DONE : accentOf()
-  const fillW = Math.round(bar.w * ratio(f))
-  const ticks: string[] = []
-  for (let i = 1; i < f.total; i++) {
-    const x = Math.round((bar.w * i) / f.total)
-    if (x > fillW + 4) ticks.push(`<rect x="${x}" y="${BAR_H / 2 - 4}" width="1.5" height="8" rx="0.75"/>`)
-  }
-  const text = label(f)
-  const { pillX, bandPillW } = pillOf(f, W)
-  return bandSvg(
-    W,
-    `${barClip(bar.w)}
-<g transform="translate(${bar.x},${bar.y})">
-<g clip-path="url(#c)"><g class="tk">${ticks.join('')}</g></g>
-<rect x="${pillX}" width="${bandPillW}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${color}"/>
-<text x="${pillX + bandPillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${f.isFinished ? '#0f2a1c' : '#1f1e1d'}">${xml(text)}</text>
-</g>`,
-  )
-}
 
 // The band's crab, beside the layers, walking while an agent runs.
 const bandCrabSvg = (isWorking: boolean): string =>
@@ -2132,29 +2095,29 @@ export const register: Register = (on, options) => {
       // A looping drawing is a mark Client where the surface has one (the desktop), else an image.
       const Client = e.surface === 'desktop' && 'Client' in ui ? ui.Client : null
       const loop = (key: string, props: MarkProps) => (Client ? <Client key={key} module="./mark.tsx" props={props} /> : <Svg key={key} {...props} />)
-      // About 8 CSS px per reported column; the rest is the count, the dismiss
-      // and their gaps. No floor above the slot: a row wider than it would wrap.
-      const width = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 96 - (flagged ? pillW(chipText) + 8 : 0)))
-      // The row's pixel width is a guess from its columns; the controls take the right edge, so any
-      // slack the guess leaves sits between the bar and the crab, not past the ✕.
+      // The bar is laid out by the app: a track that grows into whatever the row leaves, its
+      // segments sharing it by flexGrow (done, handed to workers, left). No px from a column guess.
+      const color = f.isFinished ? DONE : accentOf()
+      const full = ratio(f) >= 1
+      const doneG = full ? 1 : f.done
+      const runG = full || !f.total ? 0 : Math.min(f.total, f.done + f.running) - f.done
+      const restG = full ? 0 : f.total ? f.total - f.done - runG : 1
+      const pillText = label(f)
+      const maxTitle = Math.max(60, (e.props.bodyColumns || 100) * 8 * 0.4)
       return (
         <Box flexDirection="column">
-          <Box flexDirection="row" alignItems="center" justifyContent="space-between">
-            {/* The bar's layers share one origin; the glow (constant, see `loop`) sits between the fill and the pill. */}
-            <Box>
-                <Svg source={bandBaseSvg(f, width)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width - CRAB_W} height={H} />
-                {/* A finished or idle bar holds still: an idle window would otherwise repaint the veil forever. */}
-                {!f.isFinished && isBusy && ratio(f) < 1 && (
-                  <Box position="absolute" top={0} left={glowLeft(f, width)}>
-                    {/* The alt is required (the desktop refuses an empty one) and stable, or the glow would restart. */}
-                    {loop('band-glow', { source: bandGlowSvg(), alt: f.title, width: GLOW_W, height: H })}
-                  </Box>
-                )}
-                <Box position="absolute" top={0} left={0}>
-                  <Svg source={bandTopSvg(f, width)} alt={label(f)} width={width - CRAB_W} height={H} />
-                </Box>
+          <Box flexDirection="row" alignItems="center">
+            <Svg source={bandTitleSvg(f, maxTitle, color)} alt={`${f.title}: ${pillText}, ${percent}`} width={bandTitleW(f, maxTitle)} height={H} />
+            <Box flexDirection="row" flexGrow={1} marginRight={1}>
+              <Box flexGrow={doneG} backgroundColor={color} />
+              <Svg source={bandPillSvg(pillText, color, f.isFinished)} alt={pillText} width={bandPillW(pillText)} height={BAR_H} />
+              {/* A finished, full or idle bar holds still. The alt is required and stable, or the glow would restart. */}
+              {!f.isFinished && isBusy && !full && loop('band-glow', { source: bandGlowSvg(), alt: f.title, width: GLOW_W, height: BAR_H })}
+              <Box flexGrow={runG} backgroundColor={runColor(color)} />
+              <Box flexGrow={restG} backgroundColor={trackColor()} />
+              <Svg source={bandCapSvg(full ? color : null)} alt={percent} width={BAR_H / 2} height={BAR_H} />
             </Box>
-            <Box flexDirection="row" alignItems="center" gap={1}>
+            <Box flexDirection="row" alignItems="center">
               {isWorking ? (
                 loop('band-crab', { source: bandCrabSvg(true), alt: tr().agent, width: CRAB_W, height: H })
               ) : (

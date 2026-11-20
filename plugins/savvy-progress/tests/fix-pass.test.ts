@@ -74,23 +74,6 @@ test('at 40 columns no two texts on a card row overlap, and none runs past the c
   for (const a of rows) for (const b of rows) if (a !== b && a.y === b.y && a.from < b.from) expect(a.to).toBeLessThanOrEqual(b.from)
 })
 
-test('band: the glow sits at the pill\'s right edge, never hidden under it', async ($, on) => {
-  setup(on)
-  for (const done of [0, 1, 2, 4]) {
-    await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Flow', phase: 'delegate', total: 5, done } as never)
-    if (done === 0) await spawn($, 'a')
-    const { nodes, json } = await mount($, 'AbovePrompt')
-    const top = srcs(nodes).find(s => s.includes('>Tasks ')) ?? ''
-    const bx = Number(/<g transform="translate\(([\d.]+),/.exec(top)?.[1])
-    const [, px, pw] = /<rect x="([\d.]+)" width="([\d.]+)" height="16"/.exec(top) ?? []
-    const pillRight = bx + Number(px) + Number(pw)
-    const left = Number(/"left":(\d+)/.exec(json.slice(json.indexOf('"position":"absolute"')))?.[1]) * 8
-    // Granularity is one cell (8px): the glow starts within a cell of the pill's edge and shows past it.
-    expect(left).toBeGreaterThanOrEqual(pillRight - 8)
-    expect(left + 24).toBeGreaterThan(pillRight)
-  }
-})
-
 test('pane: 200 planned tasks stay under the host bound, with a "+N more planned" line', async ($, on) => {
   setup(on)
   const tasks = Array.from({ length: 200 }, (_, i) => ({ title: `task number ${i + 1}`, tier: 'medium' }))

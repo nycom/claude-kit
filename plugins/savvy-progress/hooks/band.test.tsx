@@ -27,8 +27,9 @@ test('terminal: the row draws the title, bar and label as text, not an Svg', asy
   expect(await band($, 'terminal')).toEqual({ svg: 0, title: 1, label: 1 })
 })
 
-// The fork's desktop band is layered: the bar's base, its pill on top, and the crab beside them; no Text.
-test('desktop: the row is drawn as layered Svgs, not text', async ($, on) => {
+// The fork's desktop band: the title with the bar's left end, the pill, the right end and the crab
+// as images, the track between them Boxes; no Text.
+test('desktop: the row is drawn as images and Boxes, not text', async ($, on) => {
   await session($, on)
-  expect(await band($, 'desktop')).toEqual({ svg: 3, title: 0, label: 0 })
+  expect(await band($, 'desktop')).toEqual({ svg: 4, title: 0, label: 0 })
 })

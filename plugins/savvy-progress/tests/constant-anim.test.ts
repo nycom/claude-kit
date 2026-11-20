@@ -35,7 +35,7 @@ const draw = async ($: $T, mount: () => ReturnType<$T['ui']['mount']>) => {
   const shape = (n: Node | string): unknown => {
     if (typeof n === 'string') return 's'
     const img = imgOf(n)
-    return img ? `${n.type}:${isAnimated(img.source ?? '') ? 'A' : 'D'}:${img.width}x${img.height}` : [n.type, n.props?.position ?? '', (n.children ?? []).map(shape)]
+    return img ? (isAnimated(img.source ?? '') ? `${n.type}:A:${img.width}x${img.height}` : `${n.type}:D:${img.height}`) : [n.type, n.props?.position ?? '', (n.children ?? []).map(shape)]
   }
   return { animated: svgs.filter(isAnimated), data: svgs.filter(s => !isAnimated(s)), shape: JSON.stringify(shape(root as Node)) }
 }

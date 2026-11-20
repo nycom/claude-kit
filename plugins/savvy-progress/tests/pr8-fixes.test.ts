@@ -4,7 +4,7 @@ import { bash, end, PROPS, setup, spawn } from './drawing'
 import type { $T, Node } from './drawing'
 
 const keyOf = (n: Node) => n.props?.key ?? n.key ?? ''
-type Laid = Node & { props?: Node['props'] & { justifyContent?: string } }
+type Laid = Node
 const mount = async ($: $T, component: string) => {
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component, requestId: 'savvy-agents', props: PROPS } as never)
   const nodes = (await ui.findAll({})) as unknown as Laid[]
@@ -13,15 +13,19 @@ const mount = async ($: $T, component: string) => {
 }
 const PROGRESS = 'mcp__savvy-progress__progress'
 
-test('desktop band: the crab, the count and ✕ sit together at the row right edge', async ($, on) => {
+test('desktop band: the crab, the count and ✕ sit together after the growing bar, at the row right edge', async ($, on) => {
   setup(on)
   await $.tool.call({ tool: PROGRESS, title: 'Polish recheck', phase: 'review', done: 2, total: 3 } as never)
   await spawn($, 'recheck')
-  const row = (await mount($, 'AbovePrompt')).find(n => n.type === 'Box' && n.props?.justifyContent === 'space-between')
-  if (!row) throw new Error('no spread row')
-  const right = JSON.stringify(row.children?.at(-1))
+  const nodes = await mount($, 'AbovePrompt')
+  const row = nodes.find(n => n.type === 'Box' && (n.children ?? []).some(c => typeof c === 'object' && (c.props as { flexGrow?: number } | undefined)?.flexGrow === 1))
+  if (!row) throw new Error('no row with a growing bar')
+  const kids = row.children as Laid[]
+  const right = JSON.stringify(kids.at(-1))
   for (const k of ['band-crab', 'savvy-agents', 'savvy-dismiss']) expect(right).toContain(k)
-  expect(JSON.stringify(row.children?.[0])).not.toContain('band-crab')
+  expect((kids.at(-2)?.props as { flexGrow?: number } | undefined)?.flexGrow).toBe(1)
+  // Nothing between them: the crab sits right against the count.
+  expect((kids.at(-1)?.props as { gap?: number } | undefined)?.gap).toBeUndefined()
 })
 
 test('desktop pane: a long-running agent and its Background row still draw beside 80 held finished agents', async ($, on) => {
