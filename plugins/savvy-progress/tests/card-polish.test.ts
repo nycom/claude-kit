@@ -47,7 +47,7 @@ test('card: context and cost on one dim labelled line', async ($, on) => {
   await spawn($, 'cache-tax review c1')
   expect(card(await draw($), 'cache-tax review c1')).toContain('ctx — · —')
   await work($, 'w1')
-  expect(card(await draw($), 'cache-tax review c1')).toMatch(/ctx \d+% · \$\d+\.\d{2}/)
+  expect(card(await draw($), 'cache-tax review c1')).toMatch(/ctx \d+% · ≈\$\d+\.\d{2}/)
 })
 
 test('card: no bar for an agent that reports no steps', async ($, on) => {
@@ -98,5 +98,48 @@ test('terminal: a card row shows "3/5 · 2:10" and keeps context and cost', asyn
   await clock.advance(130_000)
   const all = texts(await draw($, 'terminal'))
   expect(all).toContain('3/5 · 2:10')
-  expect(all).toMatch(/ctx \d+% · \$\d+\.\d{2}/)
+  expect(all).toMatch(/ctx \d+% · ≈\$\d+\.\d{2}/)
+})
+
+// The drawn tree as the host gets it, for checking which elements share a row.
+type Tree = { type: string; key?: string; props?: Record<string, unknown> & { key?: string; module?: string; props?: Record<string, unknown> }; children?: Tree[] }
+const tree = async ($: $T) => {
+  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: PROPS } as never)
+  const drawn = (await ui.drawn()) as unknown as Tree
+  await ui.unmount()
+  return drawn
+}
+const walk = (t: Tree, f: (n: Tree) => void) => { f(t); for (const c of t.children ?? []) if (c && typeof c === 'object') walk(c, f) }
+
+test('pane: one summary line replaces the three tiles', async ($, on) => {
+  setup(on)
+  answers(on)
+  await spawn($, 'cache-tax review c1')
+  const before = sources(await draw($))
+  expect(before).not.toContain('class="tile"')
+  expect(before).toContain('>1 running · — · —<')
+  await work($, 'w1')
+  expect(sources(await draw($))).toMatch(/>1 running · ≈\$\d+\.\d{2} · \d+:\d{2}</)
+})
+
+test('pane: the compact toggle sits in the summary row, dim with hover', async ($, on) => {
+  setup(on)
+  await spawn($, 'cache-tax review c1')
+  let row: Tree | undefined
+  walk(await tree($), n => {
+    const kids = n.children ?? []
+    const hasToggle = kids.some(k => k?.props?.module === 'hooks/controls.tsx' && (k.key ?? k.props?.key) === 'compact')
+    const hasSummary = kids.some(k => k?.type === 'Svg' && String(k.props?.source ?? '').includes('1 running'))
+    if (hasToggle && hasSummary) row = n
+  })
+  expect(row).toBeDefined()
+  const toggle = row?.children?.find(k => k?.props?.module === 'hooks/controls.tsx')
+  expect(toggle?.props?.props).toMatchObject({ dim: true })
+  expect(typeof toggle?.props?.props?.hover).toBe('string')
+})
+
+test('terminal: the pane header prints the same summary text', async ($, on) => {
+  setup(on)
+  await spawn($, 'cache-tax review c1')
+  expect(texts(await draw($, 'terminal'))).toContain('1 running · — · —')
 })

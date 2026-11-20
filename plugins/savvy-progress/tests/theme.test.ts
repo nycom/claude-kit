@@ -37,8 +37,8 @@ test('theme: colors.toml recolours the pane; a missing file keeps the defaults',
   }
 
   // No skins plugin loaded here: its theme reads as absent and colors.toml applies, with no error.
-  // No file: the default tile and text colours, nothing themed.
-  expect(await drawn()).toContain('.tile{fill:#f4f3f0}')
+  // No file: the default text colours, nothing themed.
+  expect(await drawn()).toContain('.s{fill:#6b6b68}')
   expect(await drawn()).not.toContain('#13141c')
 
   // Omarchy's own keys (tokyo-night); with no file the poll runs once a minute, not every 2s.

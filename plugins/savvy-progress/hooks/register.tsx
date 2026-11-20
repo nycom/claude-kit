@@ -979,29 +979,28 @@ const markColumnSvg = (h: number, y: number, status: string, color: string, id: 
 
 // The pane's own title already says "Agents": the header names the flow, if any.
 // Under it, the last /status block's header and next gate, if any.
-const headerSvg = (W: number, title: string, lines: string[], t: ReturnType<typeof totals>): string => {
-  const s = tr()
-  const gap = 6
-  const tw = (W - gap * 2) / 3
-  const top = headerHeight(title, lines) - 44
+// The flow's title and the /status lines, when there are any; the totals sit on the summary row below.
+const headerSvg = (W: number, title: string, lines: string[]): string => {
   const y0 = title ? 35 : 15
-  const tile = (i: number, k: string, v: string) =>
-    `<rect class="tile" x="${i * (tw + gap)}" y="${top}" width="${tw}" height="40" rx="8"/>
-<text class="s tl" x="${i * (tw + gap) + 9}" y="${top + 16}" font-family="${FONT}" font-size="11">${k}</text>
-<text class="t" x="${i * (tw + gap) + 9}" y="${top + 33}" font-family="${FONT}" font-size="15" font-weight="600" font-variant-numeric="tabular-nums">${v}</text>`
   return svg(
     W,
     headerHeight(title, lines),
     `${title ? `<text class="t" x="0" y="15" font-family="${FONT}" font-size="14" font-weight="600">${xml(fitText(title, 14, W))}</text>` : ''}
-${lines.map((l, i) => `<text class="s" x="0" y="${y0 + i * 20}" font-family="${FONT}" font-size="12">${xml(fitText(l, 12, W))}</text>`).join('')}
-${tile(0, s.cost, '≈' + fmtCost(t.cost))}${tile(1, s.tokens, fmtTokens(t.tokens))}${tile(2, s.time, fmtTime(t.time))}`,
+${lines.map((l, i) => `<text class="s" x="0" y="${y0 + i * 20}" font-family="${FONT}" font-size="12">${xml(fitText(l, 12, W))}</text>`).join('')}`,
   )
 }
 
 const headerHeight = (title: string, lines: string[]): number => {
   const n = (title ? 1 : 0) + lines.length
-  return n ? 44 + n * 20 + 8 : 44
+  return n ? n * 20 + 4 : 0
 }
+
+// One dim line in place of the three tiles: "3 running · ≈$0.42 · 4:10", "—" until a request reports usage.
+const summaryText = (running: number, t: ReturnType<typeof totals>): string =>
+  t.tokens > 0 ? `${running} ${tr().busy} · ≈${fmtCost(t.cost)} · ${fmtTime(t.time)}` : `${running} ${tr().busy} · — · —`
+
+const summarySvg = (W: number, text: string): string =>
+  svg(W, 20, `<text class="s" x="0" y="14" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">${xml(fitText(text, 12, W))}</text>`)
 
 // The task's own progress when the worker reports steps; a finished run is full.
 const progressOf = (a: AgentRun): number | null => {
@@ -1033,7 +1032,7 @@ const ctxOf = (a: AgentRun): number => (a.contextMax ? Math.min(100, Math.round(
 const cardStats = (a: AgentRun, at: number): { right: string; dim: string } => {
   const time = fmtTime(elapsed(a, at))
   const right = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal} · ${time}` : time
-  const dim = a.tokens > 0 ? `ctx ${ctxOf(a)}% · ${fmtCost(a.costUsd)}` : 'ctx — · —'
+  const dim = a.tokens > 0 ? `ctx ${ctxOf(a)}% · ≈${fmtCost(a.costUsd)}` : 'ctx — · —'
   return { right, dim }
 }
 
@@ -1779,7 +1778,7 @@ export const register: Register = (on, options) => {
       const { Svg, Client } = ui
       // Pane Buttons' presses never land on the desktop: the controls are Clients, pressed by key.
       const control = (key: string, props: ControlProps) => <Client key={key} module="./controls.tsx" props={props} />
-      const toggleCompact = control('compact', { label: p.isCompact ? '⊞' : '⊟' })
+      const toggleCompact = control('compact', { label: p.isCompact ? '⊞' : '⊟', dim: true, hover: accentOf() })
       const toggleDone = control('done', { label: doneLabel })
       const stopButton = (x: BackgroundTask) => control(`stop-${x.id}`, { label: '■', dim: true, hover: pal?.red ?? RED })
       const W = Math.max(240, Math.min(900, (e.props.bodyColumns || 40) * 8 - 8))
@@ -1845,12 +1844,21 @@ export const register: Register = (on, options) => {
         )
       }
       const named = [title, ...statusLines].filter(Boolean).join(', ')
-      const header = <Svg source={headerSvg(W, title, statusLines, t)} alt={named ? `${named}: ${summary}` : summary} width={W} height={headerHeight(title, statusLines)} />
+      const line = summaryText(running.length, t)
+      const header = (
+        <Box key="header" flexDirection="column">
+          {headerHeight(title, statusLines) > 0 && <Svg source={headerSvg(W, title, statusLines)} alt={named} width={W} height={headerHeight(title, statusLines)} />}
+          <Box flexDirection="row" alignItems="center" gap={1}>
+            <Svg source={summarySvg(W - 40, line)} alt={line} width={W - 40} height={20} />
+            {toggleCompact}
+          </Box>
+        </Box>
+      )
       const plannedRows = planned.map(pl => (
         <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
       ))
       const budget = budgetOf()
-      for (const el of [header, toggleCompact, toggleDone, ...plannedRows]) budget.add(el, true)
+      for (const el of [header, toggleDone, ...plannedRows]) budget.add(el, true)
       // Running cards first, then background work; once one does not fit, the rest are a count.
       const runCards = budget.take(running, card)
       const isRunCut = runCards.length < running.length
@@ -1867,7 +1875,6 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           {header}
-          {toggleCompact}
           {isEmpty && <Text dimColor>{s.empty}</Text>}
           {running.length > 0 && section('h-run', `${s.running} · ${running.length}`)}
           {runCards}
@@ -1963,9 +1970,7 @@ export const register: Register = (on, options) => {
             {l}
           </Text>
         ))}
-        <Text dimColor>
-          ≈{fmtCost(t.cost)} · {fmtTokens(t.tokens)} {s.tokensWord} · {fmtTime(t.time)}
-        </Text>
+        <Text dimColor>{summaryText(running.length, t)}</Text>
         {p.isCompact ? (
           <Box flexDirection="column">
             <Text wrap="truncate-end">
