@@ -70,7 +70,7 @@ test('desktop: every looping drawing is a keyed mark Client of fixed size, its p
   // The click folds the Ended group open: an ended card's crab stands still, no Client.
   const after = await loops(() => pane($), ui => ui.post({ press: true }, { in: 'done' }))
   expect(after.json).toBe(full.json)
-  expect(after.statics.join('')).toContain('1/3 · red test')
+  expect(after.statics.join('')).toContain('>red test<')
   expect((await loops(() => band($))).json).toBe(bar.json)
 
   // The compact view's crabs are one drawing: one Client, as steady.

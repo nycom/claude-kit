@@ -201,8 +201,8 @@ const STRINGS = {
     review: 'Review',
     busy: 'running',
     isFailed: 'failed',
-    needsInput: 'NEEDS INPUT',
-    failedFlag: 'FAILED',
+    needsInput: 'Needs input',
+    failedFlag: 'Failed',
     agent: 'agent',
     toastInput: 'needs input',
     toastFailed: (n: number) => `failed ${n} times`,
@@ -242,8 +242,8 @@ const STRINGS = {
     review: 'Ревью',
     busy: 'в работе',
     isFailed: 'с ошибкой',
-    needsInput: 'НУЖЕН ОТВЕТ',
-    failedFlag: 'НЕУДАЧ',
+    needsInput: 'Нужен ответ',
+    failedFlag: 'Неудач',
     agent: 'агент',
     toastInput: 'нужен ответ',
     toastFailed: (n: number) => `неудач: ${n}`,
@@ -1028,24 +1028,36 @@ const agentHeight = (a: AgentRun): number => (a.blocked ? 82 : 66)
 
 const ctxOf = (a: AgentRun): number => (a.contextMax ? Math.min(100, Math.round((a.contextTokens / a.contextMax) * 100)) : 0)
 
+// The card's numbers, labelled: steps and time on the right; context and cost on one dim line
+// ("—" until the first model request reports usage).
+const cardStats = (a: AgentRun, at: number): { right: string; dim: string } => {
+  const time = fmtTime(elapsed(a, at))
+  const right = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal} · ${time}` : time
+  const dim = a.tokens > 0 ? `ctx ${ctxOf(a)}% · ${fmtCost(a.costUsd)}` : 'ctx — · —'
+  return { right, dim }
+}
+
+// The bar means progress only: none for an agent that reports no steps. A plain agent takes the accent.
+const barFill = (a: AgentRun): { width01: number; color: string } | null => {
+  if (!a.stepTotal) return null
+  const tier = tierOf(a.type)
+  return { width01: progressOf(a) ?? 0, color: tier === 'other' ? accentOf() : colorOf(tier) }
+}
+
 // The card's data, between its crab and its mark: W is the whole card's width.
 const agentSvg = (W: number, a: AgentRun, at: number): string => {
   const s = tr()
   const tier = tierOf(a.type)
-  const color = colorOf(tier)
-  const ctx = ctxOf(a)
   const textW = W - 42 - 22
   const meta = [a.effort ? `${modelName(a.model)} · ${a.effort}` : modelName(a.model)]
   if (a.round > 1) meta.push(`${s.round} ${a.round}`)
   if (a.status === 'failed') meta.push(s.failed)
   if (failedHistory(a)) meta.push(failedHistory(a))
   const barW = textW
-  const progress = progressOf(a)
-  const stats = `ctx ${ctx}% · ${fmtTokens(a.contextTokens)}  ≈${fmtCost(a.costUsd)}  ${fmtTime(elapsed(a, at))}`
-  const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' · ' + a.stepNote : ''}` : ''
-  const stepsW = Math.max(0, barW - textWidth(stats, 11) - 12)
-  // Without reported steps the bar falls back to the context, drawn grey.
-  const fillW = Math.round(barW * (progress ?? ctx / 100))
+  const { right, dim } = cardStats(a, at)
+  const bar = barFill(a)
+  const note = a.stepNote ?? ''
+  const noteW = Math.max(0, barW - textWidth(right, 11) - 12)
   const flag = needsAttention(a) ? flagOf(a) : ''
   const title = fitText(a.description || a.type, 13, textW - (flag ? pillW(flag) + 8 : 0))
   const h = agentHeight(a)
@@ -1054,10 +1066,11 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
     DW,
     h,
     `<text class="t" x="0" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${flag ? pill(Math.round(textWidth(title, 13) + 8), 6, flag) : ''}
-<text x="0" y="34" font-family="${FONT}" font-size="11"><tspan class="tc-${tier}">${xml(tier === 'other' ? a.type : tier)}</tspan><tspan class="s">  ${xml(meta.join('  ·  '))}</tspan></text>
-${steps && stepsW > 30 ? `<text class="t" x="0" y="49" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(fitText(steps, 11, stepsW))}</text>` : ''}
-<text class="s" x="${barW}" y="49" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${stats}</text>
-<rect class="k" x="0" y="55" width="${barW}" height="4" rx="2"/><rect${progress === null ? ' class="m"' : ''} x="0" y="55" width="${fillW}" height="4" rx="2"${progress === null ? '' : ` fill="${color}"`}/>
+<text x="0" y="34" font-family="${FONT}" font-size="11"><tspan class="tc-${tier}">${xml(tier === 'other' ? a.type : tier)}</tspan><tspan class="s"> · ${xml(meta.join(' · '))}</tspan></text>
+<text class="s" x="${barW}" y="34" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(dim)}</text>
+${note && noteW > 30 ? `<text class="t" x="0" y="49" font-family="${FONT}" font-size="11">${xml(fitText(note, 11, noteW))}</text>` : ''}
+<text class="t" x="${barW}" y="49" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(right)}</text>
+${bar ? `<rect class="k" x="0" y="55" width="${barW}" height="4" rx="2"/><rect x="0" y="55" width="${Math.round(barW * bar.width01)}" height="4" rx="2" fill="${bar.color}"/>` : ''}
 ${a.blocked ? `<text class="r" x="0" y="75" font-family="${FONT}" font-size="11">${xml(fitText(`↳ ${a.blocked}`, 11, textW))}</text>` : ''}
 ${rowLine(DW, h)}`,
   )
@@ -1887,7 +1900,8 @@ export const register: Register = (on, options) => {
       const ctx = ctxOf(a)
       const progress = progressOf(a)
       const model = a.effort ? `${modelName(a.model)} · ${a.effort}` : modelName(a.model)
-      const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' ' + a.stepNote : ''} · ` : ''
+      const { right, dim } = cardStats(a, at)
+      const stats = `${right}${a.stepNote ? ` · ${a.stepNote}` : ''} · ${dim}`
       return (
         <Box key={a.id} flexDirection="column" marginBottom={1}>
           <Box flexDirection="row" gap={1}>
@@ -1908,10 +1922,7 @@ export const register: Register = (on, options) => {
           <Text wrap="truncate-end">
             {'  '}
             {progress === null ? <Text dimColor>{ctxBar(ctx, barW)}</Text> : <Text color={color}>{ctxBar(progress * 100, barW)}</Text>}
-            <Text dimColor>
-              {' '}
-              {steps}ctx {ctx}% · {fmtTokens(a.contextTokens)} ≈{fmtCost(a.costUsd)} {fmtTime(elapsed(a, at))}
-            </Text>
+            <Text dimColor>{` ${stats}`}</Text>
           </Text>
         </Box>
       )

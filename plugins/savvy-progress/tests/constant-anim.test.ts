@@ -64,8 +64,8 @@ test('desktop pane: a running card and a background row keep byte-identical anim
   expect(after.shape).toBe(before.shape)
   // The data did move: the step, the tokens, the card's time and the row's minutes.
   const data = after.data.join('')
-  expect(before.data.join('')).not.toContain('1/3 · red test')
-  for (const text of ['1/3 · red test', '42k', '1:01', 'shell · 1m']) expect(data).toContain(text)
+  expect(before.data.join('')).not.toContain('>red test<')
+  for (const text of ['>red test<', '1/3 · ', '42k', '1:01', 'shell · 1m']) expect(data).toContain(text)
   expect(delays([...after.animated, ...after.data])).toEqual(delays([...before.animated, ...before.data]))
   for (const rule of REDUCED) expect(after.animated.join('')).toContain(rule)
 })

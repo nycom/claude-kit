@@ -9,7 +9,7 @@ A Claude Code mod: a progress bar above the prompt and a live panel of subagents
 ## Tools it adds
 
 - `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks. Only the main session can: a call from a subagent is ignored, so a worker cannot rename, finish or reset the flow.
-- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). A worker that does not report shows its context fill in grey instead. The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
+- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). The card's bar shows those steps, in the tier's colour; a worker that does not report has no bar, only its time. Each card also shows steps and time ("3/5 · 2:10") and one dim line with context and cost ("ctx 38% · $0.31", or "ctx — · —" before the first request). The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
 
 Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`, list prices as of 2026-10-10), not a bill. Cache writes are priced at the 1-hour rate, which is what Claude Code writes on a subscription; a session that writes 5-minute entries is overestimated there.
 
@@ -17,8 +17,8 @@ Cost is a rough estimate from token counts and a built-in per-model price table 
 
 A worker can ask for help through `step`:
 
-- `failed: true` counts one failed attempt (test gate red, fix rejected, build broken); each such call adds one. At three the card is flagged **FAILED ×N**, and N keeps counting. The streak resets when a `step` call without `failed` moves `done` on, or newly reaches `done >= total` (including by lowering `total` or setting it for the first time). A plain call that leaves `done` where it was does not reset it.
-- `blocked: "<question>"` flags the card **NEEDS INPUT** and shows the question under it. The worker's next `step` call without `blocked` clears it.
+- `failed: true` counts one failed attempt (test gate red, fix rejected, build broken); each such call adds one. At three the card is flagged **Failed ×N**, and N keeps counting. The streak resets when a `step` call without `failed` moves `done` on, or newly reaches `done >= total` (including by lowering `total` or setting it for the first time). A plain call that leaves `done` where it was does not reset it.
+- `blocked: "<question>"` flags the card **Needs input** and shows the question under it. The worker's next `step` call without `blocked` clears it.
 
 Only a running worker is flagged. When a run ends the flag goes; a failed streak of three or more stays in the card's meta as **failed ×N**.
 

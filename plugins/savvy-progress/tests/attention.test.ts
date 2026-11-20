@@ -33,7 +33,7 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
   await step('w1', { failed: true })
   expect(toasts).toEqual([])
   await step('w1', { failed: true })
-  expect(await shown('Pane')).toContain('FAILED ×3')
+  expect(await shown('Pane')).toContain('Failed ×3')
   // No flow, yet the band shows the chip.
   expect(await shown('AbovePrompt')).toContain('⚠ 1 needs attention')
   expect(toasts).toEqual(['agent fix tests: failed 3 times'])
@@ -42,26 +42,26 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
 
   // Blocked: set toasts, the same question again does not, a call without it clears it.
   await step('w2', { blocked: '  Postgres or SQLite? ' })
-  expect(await shown('Pane')).toContain('NEEDS INPUT')
+  expect(await shown('Pane')).toContain('Needs input')
   expect(await shown('Pane')).toContain('↳ Postgres or SQLite?')
   await step('w2', { blocked: 'Postgres or SQLite?' })
   expect(toasts).toEqual(['agent fix tests: failed 3 times', 'agent pick db: needs input — Postgres or SQLite?'])
   await step('w2')
-  expect(await shown('Pane')).not.toContain('NEEDS INPUT')
+  expect(await shown('Pane')).not.toContain('Needs input')
   // A fresh transition into attention toasts again.
   await step('w2', { blocked: 'Postgres or SQLite?' })
   expect(toasts.length).toBe(3)
 
   // Finishing the task clears the failed streak; a fresh streak toasts again.
   await step('w1', { done: 3, total: 3 })
-  expect(await shown('Pane')).not.toContain('FAILED')
+  expect(await shown('Pane')).not.toContain('Failed')
   // A fresh streak toasts again, and sitting at done == total a plain step call does not clear it.
   await step('w1', { failed: true, done: 3 })
   await step('w1', { failed: true, done: 3 })
   await step('w1', { failed: true, done: 3 })
   expect(toasts.length).toBe(4)
   await step('w1', { done: 3, note: 'retrying' })
-  expect(await shown('Pane')).toContain('FAILED ×3')
+  expect(await shown('Pane')).toContain('Failed ×3')
 
   // Reaching done by lowering total, or by setting it for the first time, also ends the streak.
   await spawn('lower total')
@@ -70,12 +70,12 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
     await step('w3', { done: 3, total: 5, failed: true })
     await step('w4', { done: 5, failed: true })
   }
-  expect(await shown('Pane')).toContain('lower total| FAILED ×3')
-  expect(await shown('Pane')).toContain('first total| FAILED ×3')
+  expect(await shown('Pane')).toContain('lower total| Failed ×3')
+  expect(await shown('Pane')).toContain('first total| Failed ×3')
   await step('w3', { done: 3, total: 3 })
   await step('w4', { done: 3, total: 3 })
-  expect(await shown('Pane')).not.toContain('lower total| FAILED')
-  expect(await shown('Pane')).not.toContain('first total| FAILED')
+  expect(await shown('Pane')).not.toContain('lower total| Failed')
+  expect(await shown('Pane')).not.toContain('first total| Failed')
 })
 
 const setup = (on: Parameters<Parameters<typeof test>[1]>[1], below = '', toasts: string[] = []) => {
@@ -101,11 +101,11 @@ test('an ended worker is no longer flagged: the band chip and the card clear', a
   await spawnW1($)
   await $.tool.call({ tool: STEP, done: 1, blocked: 'Postgres or SQLite?', agentId: 'w1' } as never)
   expect(await mountText($, 'terminal', 'AbovePrompt')).toContain('⚠ 1 needs attention')
-  expect(await mountText($, 'terminal', 'Pane')).toContain('NEEDS INPUT')
+  expect(await mountText($, 'terminal', 'Pane')).toContain('Needs input')
 
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: 'w1', agentId: 'w1' } as never)
   expect(await mountText($, 'terminal', 'AbovePrompt')).not.toContain('needs attention')
-  expect(await mountText($, 'terminal', 'Pane')).not.toContain('NEEDS INPUT')
+  expect(await mountText($, 'terminal', 'Pane')).not.toContain('Needs input')
 })
 
 const stepW1 = ($: Parameters<Parameters<typeof test>[1]>[0], extra: Record<string, unknown> = {}) =>
@@ -129,12 +129,12 @@ test('a step that moves done on ends the failed streak', async ($, on) => {
   setup(on)
   await spawnW1($)
   for (let i = 0; i < 3; i++) await stepW1($, { failed: true })
-  expect(await mountText($, 'terminal', 'Pane')).toContain('FAILED ×3')
+  expect(await mountText($, 'terminal', 'Pane')).toContain('Failed ×3')
   await stepW1($, { done: 2 })
-  expect(await mountText($, 'terminal', 'Pane')).not.toContain('FAILED')
+  expect(await mountText($, 'terminal', 'Pane')).not.toContain('Failed')
   // A fresh failure counts from one again.
   await stepW1($, { done: 2, failed: true })
-  expect(await mountText($, 'terminal', 'Pane')).not.toContain('FAILED')
+  expect(await mountText($, 'terminal', 'Pane')).not.toContain('Failed')
 })
 
 test('an ended worker drops the failed flag but keeps the count in its meta', async ($, on) => {
@@ -147,12 +147,12 @@ test('an ended worker drops the failed flag but keeps the count in its meta', as
   await $.ui.press({ plugin: 'savvy-progress', key: 'done' })
   await pane.unmount()
   const terminal = await mountText($, 'terminal', 'Pane')
-  expect(terminal).not.toContain('FAILED')
+  expect(terminal).not.toContain('Failed')
   expect(terminal).toContain('failed ×3')
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
   const card = (await ui.findAll({ type: 'Svg' })).map(n => String((n as { props: { source: string; alt: string } }).props.source + n.props.alt)).join('')
-  expect(card).not.toContain('FAILED')
-  expect(card).toContain('error  ·  failed ×3')
+  expect(card).not.toContain('Failed')
+  expect(card).toContain('error · failed ×3')
   await ui.unmount()
 })
 

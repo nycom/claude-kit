@@ -28,7 +28,7 @@ test('theme: colors.toml recolours the pane; a missing file keeps the defaults',
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   // A question flags the card: its red pill is drawn, so the red rule is in the pane.
-  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, blocked: 'which db?', agentId: 'w1' } as never)
+  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, total: 4, blocked: 'which db?', agentId: 'w1' } as never)
 
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
   const drawn = async () => {
@@ -103,7 +103,7 @@ test('theme: the skins theme wins over colors.toml, redraws when it changes, nul
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   // A question flags the card: its red pill is drawn, so the red rule is in the pane.
-  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, blocked: 'which db?', agentId: 'w1' } as never)
+  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, total: 4, blocked: 'which db?', agentId: 'w1' } as never)
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'ship it', total: 2, done: 1 } as never)
 
   const pane = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
