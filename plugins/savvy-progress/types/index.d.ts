@@ -84,6 +84,8 @@ declare module 'claude-code' {
       background: BackgroundTask[]
       /** The last /status block: its `STATUS ` line and the first LEFT item, "" when none. */
       status: { header: string; gate: string } | null
+      /** The main session's own turn is between a model step and its end (an abort ends it too). */
+      mainTurn: boolean
     }
   }
 }

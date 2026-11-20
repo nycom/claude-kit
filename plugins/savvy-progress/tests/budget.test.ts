@@ -95,6 +95,25 @@ test('desktop pane: 30 running agents and 10 background shells all draw, far ins
   expect(clients.sort()).toEqual(['crab-w28', 'crab-w29', 'crab-w30', 'mark-w28', 'mark-w29', 'mark-w30'])
 })
 
+test('desktop pane: 80 running agents and 10 background shells stop at the host bound, with a "+N more running" line', async ($, on) => {
+  const clock = setup(on)
+  for (let i = 1; i <= 80; i++) {
+    await spawn($, `running task number ${i}`, TYPES[i % TYPES.length] ?? '')
+    await clock.advance(1_000)
+  }
+  for (let i = 1; i <= 10; i++) await bash($, `npm run watcher ${i}`)
+  const pane = await drawPane($)
+  // Held runs are small for the engine count, but each still costs the host its tree: the host bound cuts first.
+  expect(pane.json.length).toBeLessThan(200_000)
+  expect(engineChars(pane.root)).toBeLessThan(90_000)
+  const drawn = pane.keys.filter(k => /^w\d+$/.test(k) || k.startsWith('bg-')).length
+  expect(drawn).toBeLessThan(90)
+  expect(pane.texts).toContain(`+${90 - drawn} more running`)
+  // The newest three still loop: looping cards are drawn first, so the cut never takes one.
+  const clients = pane.nodes.filter(n => n.type === 'Client').map(keyOf).filter(k => /^(crab|mark|bgmark)-/.test(k ?? ''))
+  expect(clients.sort()).toEqual(['crab-w78', 'crab-w79', 'crab-w80', 'mark-w78', 'mark-w79', 'mark-w80'])
+})
+
 test('desktop pane: a few running agents all draw, no "more" line', async ($, on) => {
   setup(on)
   for (let i = 1; i <= 3; i++) await spawn($, `small task ${i}`, 'savvy-medium')

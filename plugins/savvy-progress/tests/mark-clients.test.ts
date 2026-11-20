@@ -173,3 +173,33 @@ test('desktop band: a finished flow holds still, no twinkle and no walking crab'
   expect(bar.statics.some(s => s.includes('class="k t0"'))).toBe(false)
   for (const s of bar.statics) expect(isAnimated(s)).toBe(false)
 })
+
+test('desktop band: an unfinished flow twinkles only while work runs, a main turn included; an aborted turn stills it', async ($, on) => {
+  setup(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Steady', phase: 'delegate', done: 1, total: 2 } as never)
+  // Nothing works: the bar holds still although the flow is not finished.
+  expect((await loops(() => band($))).keys).toEqual([])
+  // The main session's own turn takes a step: the twinkle runs, the band crab stays still (no subagent).
+  for await (const _ of $.turn.step({ turnId: 'w1', index: 0, model: 'claude-opus-5-5', messageCount: 1 } as never)) void _
+  expect((await loops(() => band($))).keys).toEqual(['band-twinkle'])
+  // An interrupt ends the turn too.
+  await $.turn.complete({ reason: 'aborted', answer: '', durationMs: 0, isAborted: true, turnId: 'w1' } as never)
+  expect((await loops(() => band($))).keys).toEqual([])
+  // A subagent alone is work as well.
+  await spawn($, 'a', 'savvy-heavy')
+  expect((await loops(() => band($))).keys).toEqual(['band-twinkle', 'band-crab'])
+})
+
+test('desktop compact pane: a narrow cut keeps the newest running crabs, so the three that loop still show', async ($, on) => {
+  const clock = setup(on)
+  for (const d of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
+    await spawn($, d, 'savvy-heavy')
+    await clock.advance(1_000)
+  }
+  const narrow = () => $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 40, hasSurvey: false, maxRows: 5 } } as never)
+  const compact = await loops(narrow, ui => ui.post({ press: true }, { in: 'compact' }))
+  const icons = compact.marks[0]?.props?.props?.source ?? ''
+  // 40 columns fit four crabs: the newest four, three of them walking with a turning platter.
+  expect(icons.match(/class="c-\w+ run"/g)?.length).toBe(3)
+  expect(icons.match(/class="spin"/g)?.length).toBe(3)
+})

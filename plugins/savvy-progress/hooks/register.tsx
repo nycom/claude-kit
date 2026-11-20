@@ -16,6 +16,7 @@ const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
 const theme = atom({ plugin: 'savvy-progress', key: 'theme' } as const, null)
 const background = atom({ plugin: 'savvy-progress', key: 'background' } as const, [])
 const status = atom({ plugin: 'savvy-progress', key: 'status' } as const, null)
+const mainTurn = atom({ plugin: 'savvy-progress', key: 'mainTurn' } as const, false)
 
 // Every looping image is redrawn on the page's main thread each frame: only the most recent runs
 // of the pane loop, the rest hold their first frame. Which ones changes only as runs start and end.
@@ -1052,7 +1053,8 @@ ${statusMark(W - 8, 16, 'planned', color)}
 // they are plus the last platter's overhang; the count of the rest and the totals sit beside it.
 const compactIcons = (W: number, list: AgentRun[], planned: Planned[], isLooping: (a: AgentRun) => boolean) => {
   const icons = [
-    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false, id: a.id, run: isLooping(a) })),
+    // Newest first, as in the full pane: a narrow cut keeps the three that loop.
+    ...list.filter(a => a.status === 'running').reverse().map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false, id: a.id, run: isLooping(a) })),
     ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false, id: a.id, run: false })),
     ...planned.map(p => ({ k: p.tier in TIER_COLOR ? p.tier : 'other', c: colorOf(p.tier), s: 'planned', dim: true, id: '', run: false })),
   ]
@@ -1560,6 +1562,8 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     const result = yield* next(e)
     const agentId = e.agentId
+    // The main session is working: the band's twinkle may run (written once per turn, not per step).
+    if (!agentId && !(await read($, mainTurn))) await update($, mainTurn, () => true)
     const usage = result.usage
     if (!agentId || !usage) return result
 
@@ -1597,6 +1601,7 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const agentId = e.agentId
+    if (!agentId && (await read($, mainTurn))) await update($, mainTurn, () => false)
     if (agentId) {
       const at = await $.clock.now()
       let wasRunning = false
@@ -1953,6 +1958,8 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = ui
     const crew = list.length + plannedOf(f, list).length
     const isWorking = list.some(a => a.status === 'running')
+    // The twinkle runs only while something works: a subagent, or the main session's own turn.
+    const isBusy = isWorking || (await read($, mainTurn))
     // ponytail: Button has no accessible-label prop; the visible `×N` is all a reader gets.
     const crewButton = (
       <Button key="savvy-agents" label={`×${crew}`} plain onPress={() => void togglePane($)} />
@@ -2004,8 +2011,8 @@ export const register: Register = (on, options) => {
             <Box flexDirection="row">
               <Box>
                 <Svg source={bandBaseSvg(f, width)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width - CRAB_W} height={H} />
-                {/* A finished bar holds still: an idle window would otherwise repaint the veil forever. */}
-                {!f.isFinished && (
+                {/* A finished or idle bar holds still: an idle window would otherwise repaint the veil forever. */}
+                {!f.isFinished && isBusy && (
                   <Box position="absolute" top={0} left={0}>
                     {loop('band-twinkle', { source: bandTwinkleSvg(f, width), alt: f.title, width: width - CRAB_W, height: H })}
                   </Box>
