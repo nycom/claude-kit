@@ -61,5 +61,17 @@ test('desktop band: a full bar has no track colour peeking past the pill before 
   const pill = (track?.children ?? []).find(c => c.type === 'Svg' && c.props?.alt === 'Review 3/3')
   if (!pill) throw new Error('no pill')
   expect(String(pill.props?.source)).not.toContain('fill-opacity="0.2"')
-  expect(String(pill.props?.source)).not.toMatch(/ A8 8 0 0 1 /)
+  expect(String(pill.props?.source)).not.toMatch(/A[\d.]+ [\d.]+ 0 0 1 /)
+})
+
+// The app draws a Box at least one row tall (about the band line's 23px), so every image in the
+// track is that tall too, or the segments step around the pill, the glow and the ends.
+test('desktop band: every image in the track is the band line tall, matching the one-row segments', async ($, on) => {
+  setup(on)
+  await $.tool.call({ tool: PROGRESS, title: 'Flex', phase: 'review', done: 2, total: 3 } as never)
+  await spawn($, 'a')
+  const track = trackOf(await tree($))
+  const imgs = (track?.children ?? []).filter(c => c.type === 'Svg' || c.type === 'Client')
+  expect(imgs.length).toBe(3)
+  for (const c of imgs) expect(c.type === 'Client' ? (c.props?.props as { height?: number })?.height : c.props?.height).toBe(23)
 })

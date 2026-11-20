@@ -43,9 +43,9 @@ test('desktop band: dot, bar, pill, crab and the attention chip share one centre
   expect(num(/<circle cx="5" cy="([\d.]+)"/)).toBe(mid)
 
   // The bar's left end in the title image, and the pill (the track's height), centre on the line.
-  const capTop = num(/<path d="M[\d.]+ ([\d.]+)A8 8 0 0 0/)
-  expect(capTop + 8).toBe(mid)
-  expect(layer.props.height).toBe(16)
+  const capTop = num(/<path d="M[\d.]+ ([\d.]+)A11.5 11.5 0 0 0/)
+  expect(capTop).toBe(0)
+  expect(layer.props.height).toBe(H)
 
   // The crab: its drawn pixels' extent, scaled and offset, centres on the line.
   const crab = /<g transform="translate\(([\d.]+),([\d.-]+)\) scale\(([\d.]+)\)"[^>]*>([\s\S]*?)<\/g><\/g>\s*<\/svg>/.exec(crabImg.props.source)
