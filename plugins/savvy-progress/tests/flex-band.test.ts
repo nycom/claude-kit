@@ -52,3 +52,14 @@ test('desktop band: a finished flow is all fill, with no glow', async ($, on) =>
   expect(grows.slice(1).every(g => g === 0)).toBe(true)
   expect(JSON.stringify(track)).not.toContain('band-glow')
 })
+
+test('desktop band: a full bar has no track colour peeking past the pill before its end', async ($, on) => {
+  setup(on)
+  await $.tool.call({ tool: PROGRESS, title: 'Flex', phase: 'review', done: 3, total: 3 } as never)
+  await spawn($, 'a')
+  const track = trackOf(await tree($))
+  const pill = (track?.children ?? []).find(c => c.type === 'Svg' && c.props?.alt === 'Review 3/3')
+  if (!pill) throw new Error('no pill')
+  expect(String(pill.props?.source)).not.toContain('fill-opacity="0.2"')
+  expect(String(pill.props?.source)).not.toMatch(/ A8 8 0 0 1 /)
+})

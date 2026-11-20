@@ -428,15 +428,16 @@ const bandTitleSvg = (f: Flow, maxW: number, color: string): string => {
   )
 }
 
-// The phase pill at the fill's head: square where the fill meets it, round where the track starts.
+// The phase pill at the fill's head: square where the fill meets it, round where the track starts;
+// square both sides on a full bar, where the fill's own right end follows it.
 const bandPillW = (text: string): number => Math.round(18 + text.length * 6.6)
-const bandPillSvg = (text: string, color: string, isFinished: boolean): string => {
+const bandPillSvg = (text: string, color: string, isFinished: boolean, isFull: boolean): string => {
   const W = bandPillW(text)
   return svg(
     W,
     BAR_H,
-    `<rect width="${W}" height="${BAR_H}" ${trackPaint()}/>
-<path d="M0 0H${W - BAR_H / 2}A${BAR_H / 2} ${BAR_H / 2} 0 0 1 ${W - BAR_H / 2} ${BAR_H}H0Z" fill="${color}"/>
+    `${isFull ? `<rect width="${W}" height="${BAR_H}" fill="${color}"/>` : `<rect width="${W}" height="${BAR_H}" ${trackPaint()}/>
+<path d="M0 0H${W - BAR_H / 2}A${BAR_H / 2} ${BAR_H / 2} 0 0 1 ${W - BAR_H / 2} ${BAR_H}H0Z" fill="${color}"/>`}
 <text x="${(W - 4) / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${isFinished ? '#0f2a1c' : '#1f1e1d'}">${xml(text)}</text>`,
   )
 }
@@ -2110,7 +2111,7 @@ export const register: Register = (on, options) => {
             <Svg source={bandTitleSvg(f, maxTitle, color)} alt={`${f.title}: ${pillText}, ${percent}`} width={bandTitleW(f, maxTitle)} height={H} />
             <Box flexDirection="row" flexGrow={1} marginRight={1}>
               <Box flexGrow={doneG} backgroundColor={color} />
-              <Svg source={bandPillSvg(pillText, color, f.isFinished)} alt={pillText} width={bandPillW(pillText)} height={BAR_H} />
+              <Svg source={bandPillSvg(pillText, color, f.isFinished, full)} alt={pillText} width={bandPillW(pillText)} height={BAR_H} />
               {/* A finished, full or idle bar holds still. The alt is required and stable, or the glow would restart. */}
               {!f.isFinished && isBusy && !full && loop('band-glow', { source: bandGlowSvg(), alt: f.title, width: GLOW_W, height: BAR_H })}
               <Box flexGrow={runG} backgroundColor={runColor(color)} />
