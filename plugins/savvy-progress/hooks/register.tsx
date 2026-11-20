@@ -1225,6 +1225,8 @@ async function repace($: EngineInterface): Promise<void> {
 const HOST_MAX = 200_000
 const ENGINE_MAX = 90_000
 const ENDED_MAX = 20
+// Held finished cards kept in Running; a long unattended run (Hydra, /loop) would otherwise bury live work.
+const HELD_MAX = 6
 
 // What the engine's text budget counts of a drawing: a Client's props, an Svg's alt, a key, a
 // label and every string; never an Svg's source.
@@ -1710,7 +1712,7 @@ export const register: Register = (on, options) => {
             endedAt: at,
             // An ended worker can no longer take an answer.
             blocked: undefined,
-            // Held in Running with its pose until the user's next prompt (P7); then it moves to Ended.
+            // Held in Running with its pose until the user's next prompt; then it moves to Ended.
             heldDone: a.status === 'running' ? true : a.heldDone,
             ...(fallback && e.usage
               ? {
@@ -1757,8 +1759,10 @@ export const register: Register = (on, options) => {
     const bg = uniqById(await read($, background))
     const at = Math.max(await read($, now), ...list.map(a => a.startedAt), ...bg.map(t => t.startedAt), 0)
 
-    const running = list.filter(isShownRunning).reverse()
-    const finished = list.filter(a => !isShownRunning(a)).reverse()
+    const endOf = (x: { startedAt: number; endedAt?: number }) => x.endedAt ?? x.startedAt
+    const held = list.filter(a => a.status !== 'running' && a.heldDone).sort((a, b) => endOf(b) - endOf(a)).slice(0, HELD_MAX)
+    const running = [...list.filter(a => a.status === 'running').reverse(), ...held]
+    const finished = list.filter(a => !running.includes(a)).reverse()
     const planned = plannedOf(f, list)
     const bgActive = bg.filter(isActive).reverse()
     const bgEnded = bg.filter(x => !isActive(x)).reverse()
@@ -1884,8 +1888,7 @@ export const register: Register = (on, options) => {
       const bgRows = isRunCut || morePlanned > 0 ? [] : budget.take(bgActive, bgCard)
       const moreRunning = running.length + bgActive.length - runCards.length - bgRows.length
       // The newest ended items, agents and rows alike, drawn in the group's order: agents, then rows.
-      const endedAt = (x: { startedAt: number; endedAt?: number }) => x.endedAt ?? x.startedAt
-      const newest = new Set<AgentRun | BackgroundTask>([...finished, ...bgEnded].sort((a, b) => endedAt(b) - endedAt(a)).slice(0, ENDED_MAX))
+      const newest = new Set<AgentRun | BackgroundTask>([...finished, ...bgEnded].sort((a, b) => endOf(b) - endOf(a)).slice(0, ENDED_MAX))
       const newestCards = p.isDoneCollapsed ? [] : finished.filter(a => newest.has(a))
       const endCards = budget.take(newestCards, card)
       const endRows = p.isDoneCollapsed || endCards.length < newestCards.length ? [] : budget.take(bgEnded.filter(x => newest.has(x)), bgCard)
@@ -2063,7 +2066,7 @@ export const register: Register = (on, options) => {
     // The agents on show (running or held); with none, the whole crew including planned tasks.
     const crew = list.filter(isShownRunning).length || list.length + plannedOf(f, list).length
     const isWorking = list.some(a => a.status === 'running')
-    // ponytail: Button has no accessible-label prop; the visible "N agents" is all a reader gets.
+    // Button has no accessible-label prop; the visible "N agents" is all a reader gets.
     const crewButton = (
       <Button key="savvy-agents" label={`${crew} ${crew === 1 ? tr().agent : tr().agentsCount}`} plain onPress={() => void togglePane($)} />
     )
@@ -2132,15 +2135,16 @@ export const register: Register = (on, options) => {
       // About 8 CSS px per reported column; the rest is the count, the dismiss
       // and their gaps. No floor above the slot: a row wider than it would wrap.
       const width = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 96 - (flagged ? pillW(chipText) + 8 : 0)))
+      // The row's pixel width is a guess from its columns; the controls take the right edge, so any
+      // slack the guess leaves sits between the bar and the crab, not past the ✕.
       return (
         <Box flexDirection="column">
-          <Box flexDirection="row" alignItems="center" gap={1}>
+          <Box flexDirection="row" alignItems="center" justifyContent="space-between">
             {/* The bar's layers share one origin; the glow (constant, see `loop`) sits between the fill and the pill. */}
-            <Box flexDirection="row">
-              <Box>
+            <Box>
                 <Svg source={bandBaseSvg(f, width)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width - CRAB_W} height={H} />
                 {/* A finished or idle bar holds still: an idle window would otherwise repaint the veil forever. */}
-                {!f.isFinished && isBusy && (
+                {!f.isFinished && isBusy && ratio(f) < 1 && (
                   <Box position="absolute" top={0} left={glowLeft(f, width)}>
                     {/* The alt is required (the desktop refuses an empty one) and stable, or the glow would restart. */}
                     {loop('band-glow', { source: bandGlowSvg(), alt: f.title, width: GLOW_W, height: H })}
@@ -2149,16 +2153,17 @@ export const register: Register = (on, options) => {
                 <Box position="absolute" top={0} left={0}>
                   <Svg source={bandTopSvg(f, width)} alt={label(f)} width={width - CRAB_W} height={H} />
                 </Box>
-              </Box>
+            </Box>
+            <Box flexDirection="row" alignItems="center" gap={1}>
               {isWorking ? (
                 loop('band-crab', { source: bandCrabSvg(true), alt: tr().agent, width: CRAB_W, height: H })
               ) : (
                 <Svg key="band-crab" source={bandCrabSvg(false)} alt={tr().agent} width={CRAB_W} height={H} />
               )}
+              {chip}
+              {crewButton}
+              {dismiss}
             </Box>
-            {chip}
-            {crewButton}
-            {dismiss}
           </Box>
           {theirs}
         </Box>
