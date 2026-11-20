@@ -62,7 +62,7 @@ const spans = (src: string) =>
 
 test('at 40 columns no two texts on a card row overlap, and none runs past the card', async ($, on) => {
   setup(on)
-  await spawn($, 'review the long plan', 'superpowers:code-reviewer')
+  await spawn($, 'review the long plan', 'acme:code-reviewer')
   await $.tool.call({ tool: STEP, done: 1, total: 4, note: 'reading', agentId: 'w1' } as never)
   const src = srcs((await mount($, 'Pane', 40)).nodes).find(s => s.includes('review the long plan')) ?? ''
   const W = Number(/<svg[^>]* width="([\d.]+)"/.exec(src)?.[1])
