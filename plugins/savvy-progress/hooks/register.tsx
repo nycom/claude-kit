@@ -1560,10 +1560,10 @@ export const register: Register = (on, options) => {
 
   // Each model request of a subagent: live context, tokens and cost.
   on('turn.step', async function* ($, e, next) {
-    const result = yield* next(e)
     const agentId = e.agentId
-    // The main session is working: the band's twinkle may run (written once per turn, not per step).
+    // The main session is working: the band's twinkle runs from the first request on (written once per turn).
     if (!agentId && !(await read($, mainTurn))) await update($, mainTurn, () => true)
+    const result = yield* next(e)
     const usage = result.usage
     if (!agentId || !usage) return result
 
@@ -1958,8 +1958,6 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = ui
     const crew = list.length + plannedOf(f, list).length
     const isWorking = list.some(a => a.status === 'running')
-    // The twinkle runs only while something works: a subagent, or the main session's own turn.
-    const isBusy = isWorking || (await read($, mainTurn))
     // ponytail: Button has no accessible-label prop; the visible `×N` is all a reader gets.
     const crewButton = (
       <Button key="savvy-agents" label={`×${crew}`} plain onPress={() => void togglePane($)} />
@@ -1998,6 +1996,9 @@ export const register: Register = (on, options) => {
 
     if (e.surface !== 'terminal' && 'Svg' in ui) {
       const { Svg } = ui
+      // The twinkle runs only while something works: a subagent, or the main session's own turn.
+      // Read here, not above: the terminal band has no twinkle and need not redraw on each turn.
+      const isBusy = isWorking || (await read($, mainTurn))
       // A looping drawing is a mark Client where the surface has one (the desktop), else an image.
       const Client = e.surface === 'desktop' && 'Client' in ui ? ui.Client : null
       const loop = (key: string, props: MarkProps) => (Client ? <Client key={key} module="./mark.tsx" props={props} /> : <Svg key={key} {...props} />)

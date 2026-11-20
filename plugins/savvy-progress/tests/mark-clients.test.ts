@@ -175,12 +175,19 @@ test('desktop band: a finished flow holds still, no twinkle and no walking crab'
 })
 
 test('desktop band: an unfinished flow twinkles only while work runs, a main turn included; an aborted turn stills it', async ($, on) => {
-  setup(on)
+  setupHost(on)
+  // The model request beneath the plugins: the band is drawn while it runs, so the test sees the first request too.
+  let during: string[] = []
+  on('turn.step', async function* (_$, e) {
+    if (!(e as { agentId?: string }).agentId) during = (await loops(() => band($))).keys
+    return { turnId: 'w1', index: 0, answer: '', toolUses: [], usage: { model: 'claude-opus-5-5', input_tokens: 40_000, output_tokens: 2_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as never
+  })
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Steady', phase: 'delegate', done: 1, total: 2 } as never)
   // Nothing works: the bar holds still although the flow is not finished.
   expect((await loops(() => band($))).keys).toEqual([])
-  // The main session's own turn takes a step: the twinkle runs, the band crab stays still (no subagent).
+  // The main session's own turn takes a step: the twinkle runs from its first request on, the band crab stays still (no subagent).
   for await (const _ of $.turn.step({ turnId: 'w1', index: 0, model: 'claude-opus-5-5', messageCount: 1 } as never)) void _
+  expect(during).toEqual(['band-twinkle'])
   expect((await loops(() => band($))).keys).toEqual(['band-twinkle'])
   // An interrupt ends the turn too.
   await $.turn.complete({ reason: 'aborted', answer: '', durationMs: 0, isAborted: true, turnId: 'w1' } as never)
