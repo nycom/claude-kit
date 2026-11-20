@@ -75,7 +75,7 @@ test('desktop pane: the newest ended items mix agents and background rows by whe
   expect(pane.texts).toContain('+5 more ended')
 })
 
-test('desktop pane: 30 running agents and 10 background shells stay inside the engine budget, the rest a "+N more running" line', async ($, on) => {
+test('desktop pane: 30 running agents and 10 background shells all draw, far inside the engine budget, only three loop', async ($, on) => {
   const clock = setup(on)
   for (let i = 1; i <= 30; i++) {
     await spawn($, `running task number ${i}`, TYPES[i % TYPES.length] ?? '')
@@ -83,21 +83,16 @@ test('desktop pane: 30 running agents and 10 background shells stay inside the e
   }
   for (let i = 1; i <= 10; i++) await bash($, `npm run watcher ${i}`)
   const pane = await drawPane($)
-  // Counted from the tree itself, the pane stays under the engine's 1e5 and fills most of the 90k it allows.
+  // Held runs are small still images, so 40 runs fit with room to spare: the cut-off line never shows here.
   const chars = drawnChars(pane.nodes)
-  expect(chars).toBeLessThan(90_000)
-  expect(chars).toBeGreaterThan(80_000)
-  // The hook's own count also takes keys and labels, so it is never below the plain count.
+  expect(chars).toBeLessThan(30_000)
   expect(engineChars(pane.root)).toBeGreaterThanOrEqual(chars)
   expect(engineChars(pane.root)).toBeLessThan(90_000)
-  expect(pane.json.length).toBeLessThan(200_000)
-  const drawn = pane.keys.filter(k => /^w\d+$/.test(k) || k.startsWith('bg-')).length
-  const more = 40 - drawn
-  expect(more).toBeGreaterThan(0)
-  expect(pane.texts).toContain(`+${more} more running`)
-  // Every card that is drawn loops: its crab and its platter are Clients.
-  const cards = pane.keys.filter(k => /^w\d+$/.test(k))
-  for (const k of cards) for (const part of ['crab', 'mark']) expect(pane.nodes.find(n => keyOf(n) === `${part}-${k}`)?.type).toBe('Client')
+  expect(pane.keys.filter(k => /^w\d+$/.test(k) || k.startsWith('bg-')).length).toBe(40)
+  expect(pane.texts.some(t => t.includes('more running'))).toBe(false)
+  // Only the three most recent agents loop (crab + platter as Clients); every other run is a still image.
+  const clients = pane.nodes.filter(n => n.type === 'Client').map(keyOf).filter(k => /^(crab|mark|bgmark)-/.test(k ?? ''))
+  expect(clients.sort()).toEqual(['crab-w28', 'crab-w29', 'crab-w30', 'mark-w28', 'mark-w29', 'mark-w30'])
 })
 
 test('desktop pane: a few running agents all draw, no "more" line', async ($, on) => {

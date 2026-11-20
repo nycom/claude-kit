@@ -17,6 +17,10 @@ const theme = atom({ plugin: 'savvy-progress', key: 'theme' } as const, null)
 const background = atom({ plugin: 'savvy-progress', key: 'background' } as const, [])
 const status = atom({ plugin: 'savvy-progress', key: 'status' } as const, null)
 
+// Every looping image is redrawn on the page's main thread each frame: only the most recent runs
+// of the pane loop, the rest hold their first frame. Which ones changes only as runs start and end.
+const LOOPS = 3
+
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
 const PANE = 'savvy-agents'
@@ -427,7 +431,7 @@ const bandBaseSvg = (f: Flow, W: number): string => {
 
 // Middle layer, animated: the twinkle is a veil, not the dots. A track-coloured cell over every
 // place a dot can be fades in and out, so a dot under it dims as if its own opacity fell
-// (to .3, a finished bar's slow glow to .8), and over the bare track it shows nothing.
+// (to .3; a finished bar has no veil), and over the bare track it shows nothing.
 // So it knows nothing of the fill. Four out-of-phase groups. A cell covers whole device pixels,
 // every one its dot touches (the bar sits on a half pixel): a veil over part of a pixel dims
 // less. Only pixels wholly on the track: a veil over the rounded ends' edge would darken the page.
@@ -439,7 +443,7 @@ const bandTwinkleSvg = (f: Flow, W: number): string => {
     return dx * dx + (y - R) * (y - R) <= R * R
   }
   const isOn = (x0: number, y0: number, x1: number, y1: number): boolean => [x0, x1].every(x => onTrack(x, y0) && onTrack(x, y1))
-  return constant(`twinkle|${W}|${bar.x}|${bar.w}|${f.isFinished}`, () => {
+  return constant(`twinkle|${W}|${bar.x}|${bar.w}`, () => {
     const cells: string[][] = [[], [], [], []]
     for (let c = 0; c < Math.floor(bar.w / CELL); c++) {
       for (let r = 0; r < Math.floor(BAR_H / CELL); r++) {
@@ -452,13 +456,13 @@ const bandTwinkleSvg = (f: Flow, W: number): string => {
           for (let x = x0; x < x1; x++) for (let y = y0; y < y1; y++) if (isOn(x, y, x + 1, y + 1)) group?.push(`M${x} ${y}h1v1h-1z`)
       }
     }
-    const period = f.isFinished ? [3.2, 3.8, 4.4, 3.5] : [2.2, 2.8, 1.9, 3.3]
+    const period = [2.2, 2.8, 1.9, 3.3]
     return bandSvg(
       W,
       `<style>
 .t0,.t1,.t2,.t3{opacity:0}
 ${['', ' -.7s', ' -1.3s', ' -.4s'].map((delay, k) => `.t${k}{animation:tw ${period[k]}s ease-in-out infinite${delay}}`).join('')}
-@keyframes tw{0%,100%{opacity:0}50%{opacity:${f.isFinished ? 0.2 : 0.7}}}
+@keyframes tw{0%,100%{opacity:0}50%{opacity:.7}}
 @media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3{animation:none}}
 </style>
 <g transform="translate(${bar.x},${bar.y})">${cells.map((d, k) => `<path class="k t${k}" d="${d.join('')}"/>`).join('')}</g>`,
@@ -889,17 +893,18 @@ const crabTop = (costume: string, scale: number): number => {
 
 // A running mark is a 33⅓ platter: a faint ring, a marker and its trail turning once per 1.8s,
 // a fixed spindle. Each run's phase comes from its id, fixed for its life, so platters never
-// turn in step.
+// turn in step. A held platter keeps its first frame.
 const phaseOf = (id: string): string => {
   const hash = [...id].reduce((h, ch) => Math.imul(h ^ ch.charCodeAt(0), 16777619), 2166136261) >>> 0
   return `-${(((hash % 1000) / 1000) * 1.8).toFixed(3)}s`
 }
 
-const platter = (x: number, y: number, r: number, color: string, id: string): string =>
-  `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g class="spin" style="transform-origin:${x}px ${y}px;animation-delay:${phaseOf(id)}"><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
+const platter = (x: number, y: number, r: number, color: string, id: string, isTurning = true): string =>
+  `<g fill="${color}"><circle cx="${x}" cy="${y}" r="${r}" fill="none" stroke="${color}" opacity=".3"/><g${isTurning ? ` class="spin" style="transform-origin:${x}px ${y}px;animation-delay:${phaseOf(id)}"` : ''}><path d="M${x - r} ${y}A${r} ${r} 0 0 1 ${x} ${y - r}" fill="none" stroke="${color}" opacity=".55"/><circle cx="${x}" cy="${y - r}" r="${r / 3}"/></g><circle cx="${x}" cy="${y}" r="${r / 4}"/></g>`
 
 const statusMark = (x: number, y: number, status: string, color: string, id = ''): string => {
   if (status === 'running') return platter(x, y, 4.59, color, id)
+  if (status === 'held') return platter(x, y, 4.59, color, '', false)
   if (status === 'done') return `<path d="M${x - 5} ${y}l3.5 3.5 6.5-7" fill="none" stroke="#3B9C5F" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`
   if (status === 'failed') return `<path d="M${x - 4} ${y - 4}l8 8M${x + 4} ${y - 4}l-8 8" stroke="#D0453F" stroke-width="1.8" stroke-linecap="round"/>`
   return `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="#9a9a96" stroke-width="1.4"/><path d="M${x} ${y - 2.5}v2.8l1.8 1.2" fill="none" stroke="#9a9a96" stroke-width="1.4" stroke-linecap="round"/>`
@@ -1045,9 +1050,9 @@ ${statusMark(W - 8, 16, 'planned', color)}
 
 // Compact view: the crabs, each with its platter or cross, are one constant drawing, as wide as
 // they are plus the last platter's overhang; the count of the rest and the totals sit beside it.
-const compactIcons = (W: number, list: AgentRun[], planned: Planned[]) => {
+const compactIcons = (W: number, list: AgentRun[], planned: Planned[], isLooping: (a: AgentRun) => boolean) => {
   const icons = [
-    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false, id: a.id, run: true })),
+    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false, id: a.id, run: isLooping(a) })),
     ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false, id: a.id, run: false })),
     ...planned.map(p => ({ k: p.tier in TIER_COLOR ? p.tier : 'other', c: colorOf(p.tier), s: 'planned', dim: true, id: '', run: false })),
   ]
@@ -1066,7 +1071,7 @@ const compactIconsSvg = (shown: ReturnType<typeof compactIcons>['shown']): strin
           .map(
             (ic, i) =>
               crab(i * 36, 0, ic.k, ic.dim, ic.run, CRAB_SCALE, ic.c) +
-              (ic.s === 'running' ? platter(i * 36 + 32, 5.5, 3.94, ic.c, ic.id) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
+              (ic.s === 'running' ? platter(i * 36 + 32, 5.5, 3.94, ic.c, ic.id, ic.run) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
           )
           .join(''),
     ),
@@ -1702,17 +1707,24 @@ export const register: Register = (on, options) => {
         </Text>
       )
       const statusWord = (status: string) => (status === 'running' ? s.isRunning : status === 'failed' ? s.isFailed : status === 'planned' ? s.isPlanned : s.isFinished)
+      // The most recent running agents loop, then the most recent background tasks; the rest hold.
+      // Agents first: a long-lived server, or a task reconcile found (started "now"), is not work.
+      const recent = <T extends { startedAt: number }>(xs: T[]) => [...xs].sort((x, y) => y.startedAt - x.startedAt)
+      const looping = new Set<AgentRun | BackgroundTask>(
+        [...recent(running), ...recent(bg.filter(x => x.status === 'running'))].slice(0, LOOPS),
+      )
       // A looping drawing (see `constant`) is a Client (mark.tsx), kept across redraws by its run's key; a still one, an image.
       const drawing = (key: string, isLooping: boolean, props: MarkProps) =>
         isLooping ? <Client key={key} module="./mark.tsx" props={props} /> : <Svg key={key} {...props} />
       const card = (a: AgentRun) => {
         const cardH = agentHeight(a)
-        const isLooping = a.status === 'running'
+        const isLooping = looping.has(a)
+        const mark = a.status === 'running' && !isLooping ? 'held' : a.status
         return (
           <Box key={a.id} flexDirection="row">
             {drawing(`crab-${a.id}`, isLooping, { source: crabColumnSvg(a, cardH, isLooping), alt: s.agent, width: CARD_CRAB_W, height: cardH })}
             <Svg source={agentSvg(W, a, at)} alt={agentAlt(a)} width={W - CARD_CRAB_W - MARK_W} height={cardH} />
-            {drawing(`mark-${a.id}`, isLooping, { source: markColumnSvg(cardH, 16, a.status, colorOf(tierOf(a.type)), a.id), alt: statusWord(a.status), width: MARK_W, height: cardH })}
+            {drawing(`mark-${a.id}`, isLooping, { source: markColumnSvg(cardH, 16, mark, colorOf(tierOf(a.type)), a.id), alt: statusWord(a.status), width: MARK_W, height: cardH })}
           </Box>
         )
       }
@@ -1721,8 +1733,8 @@ export const register: Register = (on, options) => {
         <Box key={`bg-${x.id}`} flexDirection="row" alignItems="center" gap={1}>
           <Box flexDirection="row">
             <Svg source={bgSvg(W - 56, x, at)} alt={`${bgTitle(x)}: ${bgMeta(x, at)}${x.status === 'failed' ? `, ${s.isFailed}` : ''}`} width={W - 56 - MARK_W} height={BG_H} />
-            {drawing(`bgmark-${x.id}`, x.status === 'running', {
-              source: markColumnSvg(BG_H, BG_H / 2, bgMark(x), accentOf(), x.id),
+            {drawing(`bgmark-${x.id}`, looping.has(x), {
+              source: markColumnSvg(BG_H, BG_H / 2, x.status === 'running' && !looping.has(x) ? 'held' : bgMark(x), accentOf(), x.id),
               alt: statusWord(bgMark(x)),
               width: MARK_W,
               height: BG_H,
@@ -1733,7 +1745,7 @@ export const register: Register = (on, options) => {
       )
 
       if (p.isCompact) {
-        const icons = compactIcons(W, list, planned)
+        const icons = compactIcons(W, list, planned, a => looping.has(a))
         return (
           <Box flexDirection="column" gap={1}>
             <Box flexDirection="row">
@@ -1992,14 +2004,21 @@ export const register: Register = (on, options) => {
             <Box flexDirection="row">
               <Box>
                 <Svg source={bandBaseSvg(f, width)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width - CRAB_W} height={H} />
-                <Box position="absolute" top={0} left={0}>
-                  {loop('band-twinkle', { source: bandTwinkleSvg(f, width), alt: f.title, width: width - CRAB_W, height: H })}
-                </Box>
+                {/* A finished bar holds still: an idle window would otherwise repaint the veil forever. */}
+                {!f.isFinished && (
+                  <Box position="absolute" top={0} left={0}>
+                    {loop('band-twinkle', { source: bandTwinkleSvg(f, width), alt: f.title, width: width - CRAB_W, height: H })}
+                  </Box>
+                )}
                 <Box position="absolute" top={0} left={0}>
                   <Svg source={bandTopSvg(f, width)} alt={label(f)} width={width - CRAB_W} height={H} />
                 </Box>
               </Box>
-              {loop('band-crab', { source: bandCrabSvg(isWorking), alt: tr().agent, width: CRAB_W, height: H })}
+              {isWorking ? (
+                loop('band-crab', { source: bandCrabSvg(true), alt: tr().agent, width: CRAB_W, height: H })
+              ) : (
+                <Svg key="band-crab" source={bandCrabSvg(false)} alt={tr().agent} width={CRAB_W} height={H} />
+              )}
             </Box>
             {chip}
             {crewButton}
