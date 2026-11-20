@@ -200,6 +200,7 @@ const STRINGS = {
     tasks: 'Tasks',
     review: 'Review',
     busy: 'running',
+    doneWord: 'done',
     took: 'took',
     failedAfter: 'failed after',
     isFailed: 'failed',
@@ -243,6 +244,7 @@ const STRINGS = {
     tasks: 'Задачи',
     review: 'Ревью',
     busy: 'в работе',
+    doneWord: 'готово',
     took: 'заняло',
     failedAfter: 'ошибка через',
     isFailed: 'с ошибкой',
@@ -977,6 +979,18 @@ const progressOf = (a: AgentRun): number | null => {
 
 // Running, or ended and held for the finish moment: drawn in the Running group, never looping once ended.
 const isShownRunning = (a: AgentRun): boolean => a.status === 'running' || a.heldDone === true
+
+// The band's title: the flow's name; with no flow, "Claude · 2 agents" while any run, then
+// "Claude · 2 done · 1:05" while the ended ones are held; '' means no band at all.
+const bandTitle = (f: Flow | null, list: AgentRun[], at: number): string => {
+  if (f) return f.title
+  const s = tr()
+  const running = list.filter(a => a.status === 'running').length
+  if (running) return `Claude · ${running} ${running === 1 ? s.agent : s.agentsCount}`
+  const held = list.filter(a => a.heldDone)
+  if (!held.length) return ''
+  return `Claude · ${held.length} ${s.doneWord} · ${fmtTime(totals(held, at).time)}`
+}
 
 // A running worker waiting on a question, or one whose attempts keep failing; an ended one is history.
 const needsAttention = (a: AgentRun): boolean => a.status === 'running' && (!!a.blocked || (a.failedAttempts ?? 0) >= 3)
@@ -2009,8 +2023,10 @@ export const register: Register = (on, options) => {
     const f = await read($, flow)
     const list = await read($, agents)
     const flagged = list.filter(needsAttention).length
-    // With no flow the band still shows up for agents that need attention.
-    if ((f === null && !flagged) || e.props.hasSurvey) return next(e)
+    // Never reads `now`: the band must not redraw on the clock's tick. Held runs carry their end time.
+    const noFlowTitle = f === null ? bandTitle(null, list, 0) : ''
+    // With no flow the band still shows up while any agent runs or is held, or one needs attention.
+    if ((f === null && !flagged && !noFlowTitle) || e.props.hasSurvey) return next(e)
     // The band sits above what the mods beneath draw (skins' rings, cache-tax), never in its place.
     // Claude Code's own placeholder ({ type: 'engine' }) is never nested: the desktop drops a band that nests it.
     const drawn = await Promise.resolve(next(e)).catch(() => null)
@@ -2035,9 +2051,30 @@ export const register: Register = (on, options) => {
             </Text>
           )
     if (f === null) {
+      const isDesktop = e.surface !== 'terminal' && 'Svg' in ui
+      const titleRow = !noFlowTitle
+        ? null
+        : isDesktop
+          ? (
+              <ui.Svg
+                key="savvy-noflow"
+                source={svg(Math.round(textWidth(noFlowTitle, 13) + 24), H, `<circle cx="5" cy="${H / 2}" r="4" fill="${isWorking ? accentOf() : DONE}"/><text class="t" x="16" y="${H / 2 + 4.5}" font-family="${FONT}" font-size="13" font-weight="500">${xml(noFlowTitle)}</text>`)}
+                alt={noFlowTitle}
+                width={Math.round(textWidth(noFlowTitle, 13) + 24)}
+                height={H}
+              />
+            )
+          : <Text key="savvy-noflow">{noFlowTitle}</Text>
+      const crabImg = isDesktop && noFlowTitle ? <ui.Svg key="band-crab" source={bandCrabSvg(false)} alt={tr().agent} width={CRAB_W} height={H} /> : null
+      const Client = e.surface === 'desktop' && 'Client' in ui ? ui.Client : null
+      const crabRow = isDesktop && noFlowTitle && isWorking && Client
+        ? <Client key="band-crab" module="./mark.tsx" props={{ source: bandCrabSvg(true), alt: tr().agent, width: CRAB_W, height: H } satisfies MarkProps} />
+        : crabImg
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" alignItems="center" gap={1}>
+            {titleRow}
+            {crabRow}
             {chip}
             {crewButton}
           </Box>
