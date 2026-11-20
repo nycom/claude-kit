@@ -406,7 +406,7 @@ const constant = (key: string, draw: () => string): string => {
 const barOf = (f: Flow, W: number) => {
   const title = fitText(f.title, 13, Math.max(60, W * 0.4))
   const x = Math.round(16 + textWidth(title, 13) + 12)
-  return { title, x, w: Math.max(60, W - x - 46 - CRAB_W), y: (H - BAR_H) / 2 }
+  return { title, x, w: Math.max(60, W - x - 12 - CRAB_W), y: (H - BAR_H) / 2 }
 }
 
 const bandSvg = (W: number, body: string): string =>
@@ -418,30 +418,12 @@ const bandSvg = (W: number, body: string): string =>
 
 const barClip = (w: number): string => `<defs><clipPath id="c"><rect x="0" y="0" width="${w}" height="${BAR_H}" rx="${BAR_H / 2}"/></clipPath></defs>`
 
-// Bottom layer: the dot, the title, the track and its dithered fill, the percent.
+// Bottom layer: the dot, the title, the track and its solid fill; handed-to-workers is a lighter segment.
 const bandBaseSvg = (f: Flow, W: number): string => {
   const bar = barOf(f, W)
   const color = f.isFinished ? DONE : accentOf()
   const fillW = Math.round(bar.w * ratio(f))
   const runW = f.total ? Math.round((bar.w * Math.min(f.total, f.done + f.running)) / f.total) : 0
-  const dots: string[] = []
-
-  // Dithered fill: sparse at the start, dense toward the head.
-  const cols = Math.floor(fillW / CELL)
-  const rows = Math.floor(BAR_H / CELL)
-  for (let c = 0; c < cols; c++) {
-    const density = 0.35 + 0.6 * Math.pow(c / Math.max(1, cols), 1.2)
-    for (let r = 0; r < rows; r++) {
-      if (noise(c, r) < density) dots.push(`<rect x="${c * CELL + 1}" y="${r * CELL + 1}" width="2" height="2"/>`)
-    }
-  }
-  // Handed to workers, not yet accepted: a faint second layer.
-  const faint: string[] = []
-  for (let c = cols; c < Math.floor(runW / CELL); c++) {
-    for (let r = 0; r < rows; r++) {
-      if (noise(c + 7, r + 3) < 0.2) faint.push(`<rect x="${c * CELL + 1}" y="${r * CELL + 1}" width="1.7" height="1.7"/>`)
-    }
-  }
   return bandSvg(
     W,
     `${barClip(bar.w)}
@@ -450,56 +432,32 @@ const bandBaseSvg = (f: Flow, W: number): string => {
 <g transform="translate(${bar.x},${bar.y})">
 <rect class="k" width="${bar.w}" height="${BAR_H}" rx="${BAR_H / 2}"/>
 <g clip-path="url(#c)">
-<g fill="${color}">${dots.join('')}</g>
-<g fill="${color}" opacity="0.45">${faint.join('')}</g>
+${runW > fillW ? `<rect x="${fillW}" width="${runW - fillW}" height="${BAR_H}" fill="${color}" opacity="0.3"/>` : ''}
+<rect width="${fillW}" height="${BAR_H}" fill="${color}"/>
 </g>
-</g>
-<text class="m" x="${W - CRAB_W - 6}" y="${H / 2 + 4.5}" text-anchor="end" font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${Math.round(ratio(f) * 100)}%</text>`,
+</g>`,
   )
 }
 
-// Middle layer, animated: the twinkle is a veil, not the dots. A track-coloured cell over every
-// place a dot can be fades in and out, so a dot under it dims as if its own opacity fell
-// (to .3; a finished bar has no veil), and over the bare track it shows nothing.
-// So it knows nothing of the fill. Four out-of-phase groups. A cell covers whole device pixels,
-// every one its dot touches (the bar sits on a half pixel): a veil over part of a pixel dims
-// less. Only pixels wholly on the track: a veil over the rounded ends' edge would darken the page.
-const bandTwinkleSvg = (f: Flow, W: number): string => {
+// Middle layer, animated while work runs: a soft glow at the fill's leading edge. One constant
+// drawing, the same for every flow, so the clock, tokens, steps and done never restart it; a Box
+// offset (in cells, about 8 CSS px each) moves it to the head.
+const GLOW_W = 24
+const bandGlowSvg = (): string =>
+  constant('band-glow', () =>
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${GLOW_W}" height="${H}" viewBox="0 0 ${GLOW_W} ${H}">
+<defs><radialGradient id="g"><stop offset="0" stop-color="#ffffff" stop-opacity=".6"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></radialGradient></defs>
+<style>.gl{animation:gl 1.6s ease-in-out infinite}@keyframes gl{0%,100%{opacity:.25}50%{opacity:1}}@media (prefers-reduced-motion: reduce){.gl{animation:none}}</style>
+<rect class="gl" y="${(H - BAR_H) / 2}" width="${GLOW_W}" height="${BAR_H}" rx="${BAR_H / 2}" fill="url(#g)"/></svg>`,
+  )
+// Where the glow sits, in cells from the row's left edge: centred on the fill's head, inside the bar.
+const glowLeft = (f: Flow, W: number): number => {
   const bar = barOf(f, W)
-  const R = BAR_H / 2
-  const onTrack = (x: number, y: number): boolean => {
-    const dx = x < R ? R - x : x > bar.w - R ? x - bar.w + R : 0
-    return dx * dx + (y - R) * (y - R) <= R * R
-  }
-  const isOn = (x0: number, y0: number, x1: number, y1: number): boolean => [x0, x1].every(x => onTrack(x, y0) && onTrack(x, y1))
-  return constant(`twinkle|${W}|${bar.x}|${bar.w}`, () => {
-    const cells: string[][] = [[], [], [], []]
-    for (let c = 0; c < Math.floor(bar.w / CELL); c++) {
-      for (let r = 0; r < Math.floor(BAR_H / CELL); r++) {
-        const [x0, x1] = [c * CELL + 1, c * CELL + 3]
-        const y0 = Math.floor(bar.y + r * CELL + 1) - bar.y
-        const y1 = Math.ceil(bar.y + r * CELL + 3) - bar.y
-        const group = cells[Math.floor(noise(r, c) * 4)]
-        if (isOn(x0, y0, x1, y1)) group?.push(`M${x0} ${y0}h2v${y1 - y0}h-2z`)
-        else
-          for (let x = x0; x < x1; x++) for (let y = y0; y < y1; y++) if (isOn(x, y, x + 1, y + 1)) group?.push(`M${x} ${y}h1v1h-1z`)
-      }
-    }
-    const period = [2.2, 2.8, 1.9, 3.3]
-    return bandSvg(
-      W,
-      `<style>
-.t0,.t1,.t2,.t3{opacity:0}
-${['', ' -.7s', ' -1.3s', ' -.4s'].map((delay, k) => `.t${k}{animation:tw ${period[k]}s ease-in-out infinite${delay}}`).join('')}
-@keyframes tw{0%,100%{opacity:0}50%{opacity:.7}}
-@media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3{animation:none}}
-</style>
-<g transform="translate(${bar.x},${bar.y})">${cells.map((d, k) => `<path class="k t${k}" d="${d.join('')}"/>`).join('')}</g>`,
-    )
-  })
+  const head = bar.x + Math.round(bar.w * ratio(f))
+  return Math.max(0, Math.round((Math.min(bar.x + bar.w - GLOW_W, Math.max(bar.x, head - GLOW_W / 2))) / 8))
 }
 
-// Top layer, over the twinkle: the task ticks and the pill with the phase.
+// Top layer, over the glow: the task ticks and the pill with the phase.
 const bandTopSvg = (f: Flow, W: number): string => {
   const bar = barOf(f, W)
   const color = f.isFinished ? DONE : accentOf()
@@ -1659,7 +1617,7 @@ export const register: Register = (on, options) => {
   // Each model request of a subagent: live context, tokens and cost.
   on('turn.step', async function* ($, e, next) {
     const agentId = e.agentId
-    // The main session is working: the band's twinkle runs from the first request on (written once per turn).
+    // The main session is working: the band's glow runs from the first request on (written once per turn).
     if (!agentId && !(await read($, mainTurn))) await update($, mainTurn, () => true)
     const result = yield* next(e)
     const usage = result.usage
@@ -2064,7 +2022,7 @@ export const register: Register = (on, options) => {
     const isWorking = list.some(a => a.status === 'running')
     // ponytail: Button has no accessible-label prop; the visible `×N` is all a reader gets.
     const crewButton = (
-      <Button key="savvy-agents" label={`×${crew}`} plain onPress={() => void togglePane($)} />
+      <Button key="savvy-agents" label={`${crew} ${crew === 1 ? tr().agent : tr().agentsCount}`} plain onPress={() => void togglePane($)} />
     )
     const chipText = tr().chip(flagged)
     const chip = !flagged
@@ -2101,8 +2059,8 @@ export const register: Register = (on, options) => {
     // The terminal's element table is completed with an `Svg` that draws nothing: test the surface too.
     if (e.surface !== 'terminal' && 'Svg' in ui) {
       const { Svg } = ui
-      // The twinkle runs only while something works: a subagent, or the main session's own turn.
-      // Read here, not above: the terminal band has no twinkle and need not redraw on each turn.
+      // The glow runs only while something works: a subagent, or the main session's own turn.
+      // Read here, not above: the terminal band has no glow and need not redraw on each turn.
       const isBusy = isWorking || (await read($, mainTurn))
       // A looping drawing is a mark Client where the surface has one (the desktop), else an image.
       const Client = e.surface === 'desktop' && 'Client' in ui ? ui.Client : null
@@ -2113,14 +2071,14 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" alignItems="center" gap={1}>
-            {/* The bar's layers share one origin; the twinkle (constant, see `loop`) sits between the fill and the pill. */}
+            {/* The bar's layers share one origin; the glow (constant, see `loop`) sits between the fill and the pill. */}
             <Box flexDirection="row">
               <Box>
                 <Svg source={bandBaseSvg(f, width)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width - CRAB_W} height={H} />
                 {/* A finished or idle bar holds still: an idle window would otherwise repaint the veil forever. */}
                 {!f.isFinished && isBusy && (
-                  <Box position="absolute" top={0} left={0}>
-                    {loop('band-twinkle', { source: bandTwinkleSvg(f, width), alt: f.title, width: width - CRAB_W, height: H })}
+                  <Box position="absolute" top={0} left={glowLeft(f, width)}>
+                    {loop('band-glow', { source: bandGlowSvg(), alt: '', width: GLOW_W, height: H })}
                   </Box>
                 )}
                 <Box position="absolute" top={0} left={0}>

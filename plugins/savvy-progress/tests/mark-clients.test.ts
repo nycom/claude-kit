@@ -21,7 +21,7 @@ const tokens = async ($: $T) => {
   for await (const _ of $.turn.step({ turnId: 'w1', index: 0, model: 'claude-opus-5-5', messageCount: 1, agentId: 'w1' } as never)) void _
 }
 
-const isAnimated = (src = ''): boolean => /class="spin"|class="c-\w+ run"|@keyframes tw\{/.test(src)
+const isAnimated = (src = ''): boolean => /class="spin"|class="c-\w+ run"|@keyframes (tw|gl)\{/.test(src)
 const keyOf = (n: Node) => n.props?.key ?? n.key ?? ''
 
 type Mounted = Awaited<ReturnType<$T['ui']['mount']>>
@@ -60,7 +60,7 @@ test('desktop: every looping drawing is a keyed mark Client of fixed size, its p
   expect(full.svgs).toEqual([])
   expect(bar.svgs).toEqual([])
   expect(full.keys).toEqual(['crab-w1', 'mark-w1', 'bgmark-b1'])
-  expect(bar.keys).toEqual(['band-twinkle', 'band-crab'])
+  expect(bar.keys).toEqual(['band-glow', 'band-crab'])
   expectSteady([...full.marks, ...bar.marks])
 
   await clock.advance(61_370)
@@ -144,7 +144,7 @@ test('mobile and vscode: the band draws its twinkle and crab as images, having n
     const ui = await $.ui.mount({ plugin: 'savvy-progress', surface, component: 'AbovePrompt', props: PROPS })
     const sources = ((await ui.findAll({ type: 'Svg' })) as unknown as Node[]).map(n => n.props?.source ?? '')
     await ui.unmount()
-    expect(sources.some(s => s.includes('@keyframes tw{'))).toBe(true)
+    expect(sources.some(s => s.includes('@keyframes gl{'))).toBe(true)
     expect(sources.some(s => /class="c-\w+ run"/.test(s))).toBe(true)
   }
 })
@@ -163,7 +163,7 @@ test('desktop band: a finished flow holds still, no twinkle and no walking crab'
   setup(on)
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Steady', phase: 'delegate', done: 1, total: 2 } as never)
   await spawn($, 'a', 'savvy-heavy')
-  expect((await loops(() => band($))).keys).toEqual(['band-twinkle', 'band-crab'])
+  expect((await loops(() => band($))).keys).toEqual(['band-glow', 'band-crab'])
   await end($, 'w1')
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', done: 2, finished: true } as never)
   const bar = await loops(() => band($))
@@ -187,14 +187,14 @@ test('desktop band: an unfinished flow twinkles only while work runs, a main tur
   expect((await loops(() => band($))).keys).toEqual([])
   // The main session's own turn takes a step: the twinkle runs from its first request on, the band crab stays still (no subagent).
   for await (const _ of $.turn.step({ turnId: 'w1', index: 0, model: 'claude-opus-5-5', messageCount: 1 } as never)) void _
-  expect(during).toEqual(['band-twinkle'])
-  expect((await loops(() => band($))).keys).toEqual(['band-twinkle'])
+  expect(during).toEqual(['band-glow'])
+  expect((await loops(() => band($))).keys).toEqual(['band-glow'])
   // An interrupt ends the turn too.
   await $.turn.complete({ reason: 'aborted', answer: '', durationMs: 0, isAborted: true, turnId: 'w1' } as never)
   expect((await loops(() => band($))).keys).toEqual([])
   // A subagent alone is work as well.
   await spawn($, 'a', 'savvy-heavy')
-  expect((await loops(() => band($))).keys).toEqual(['band-twinkle', 'band-crab'])
+  expect((await loops(() => band($))).keys).toEqual(['band-glow', 'band-crab'])
 })
 
 test('desktop compact pane: a narrow cut keeps the newest running crabs, so the three that loop still show', async ($, on) => {

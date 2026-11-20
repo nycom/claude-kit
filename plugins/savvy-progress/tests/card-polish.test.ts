@@ -203,3 +203,42 @@ test('card, planned and background titles share one left edge', async ($, on) =>
   expect(Number(/<text class="s" x="([\d.]+)" y="18"/.exec(planned)?.[1])).toBe(crabCol)
   expect(Number(/<text class="t" x="([\d.]+)" y="16"/.exec(bg)?.[1])).toBe(crabCol)
 })
+
+const bandNodes = async ($: $T) => {
+  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: PROPS } as never)
+  const nodes = (await ui.findAll({})) as unknown as (Node & { key?: string })[]
+  await ui.unmount()
+  return nodes
+}
+const glowOf = (nodes: (Node & { key?: string })[]) => nodes.find(n => n.type === 'Client' && (n.key ?? (n.props as { key?: string })?.key) === 'band-glow')
+
+test('band: the glow source is identical when done changes; only its position moves', async ($, on) => {
+  const clock = setup(on)
+  answers(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Flow', phase: 'delegate', total: 4, done: 1 } as never)
+  await spawn($, 'a')
+  const first = JSON.stringify(glowOf(await bandNodes($))?.props)
+  expect(first).toBeDefined()
+  await clock.advance(5_000)
+  await work($, 'w1')
+  await $.tool.call({ tool: STEP, done: 2, total: 5, agentId: 'w1' } as never)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', done: 3 } as never)
+  expect(JSON.stringify(glowOf(await bandNodes($))?.props)).toBe(first)
+})
+
+test('band: no percent, and the crew button reads "2 agents"', async ($, on) => {
+  setup(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Flow', phase: 'delegate', total: 4, done: 1 } as never)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  const nodes = await bandNodes($)
+  expect(nodes.map(n => imgOf(n as never)?.source ?? '').join('')).not.toMatch(/>\d+%</)
+  expect(nodes.some(n => (n.props as { label?: string })?.label === '2 agents')).toBe(true)
+})
+
+test('band: the fill is solid, with no dither cells', async ($, on) => {
+  setup(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Flow', phase: 'delegate', total: 4, done: 3 } as never)
+  const src = (await bandNodes($)).map(n => imgOf(n as never)?.source ?? '').join('')
+  expect(src).not.toContain('width="2" height="2"')
+})
