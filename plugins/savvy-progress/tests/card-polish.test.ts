@@ -143,3 +143,63 @@ test('terminal: the pane header prints the same summary text', async ($, on) => 
   await spawn($, 'cache-tax review c1')
   expect(texts(await draw($, 'terminal'))).toContain('1 running · — · —')
 })
+
+const svgW = (src: string) => Number(/<svg[^>]* width="([\d.]+)"/.exec(src)?.[1] ?? NaN)
+const narrow = async ($: $T) => {
+  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 40, hasSurvey: false, maxRows: 5 } } as never)
+  const nodes = (await ui.findAll({})) as unknown as Node[]
+  await ui.unmount()
+  return nodes
+}
+
+test('pill draws first and the title follows it', async ($, on) => {
+  setup(on)
+  on('ui.toast', () => ({ value: undefined }) as never)
+  await spawn($, 'asks a question')
+  await $.tool.call({ tool: STEP, done: 1, total: 4, blocked: 'which db?', agentId: 'w1' } as never)
+  const src = card(await draw($), 'asks a question')
+  expect(src).toMatch(/<rect class="r" x="0" y="\d+"/)
+  const titleX = Number(/<text class="t" x="([\d.]+)" y="18"[^>]*>asks a question</.exec(src)?.[1])
+  expect(titleX).toBeGreaterThan(40)
+})
+
+test('at 40 columns every card stays inside its own width', async ($, on) => {
+  setup(on)
+  await spawn($, 'a rather long task title that has to be cut somewhere')
+  await $.tool.call({ tool: STEP, done: 1, total: 4, note: 'a long note about what it does now', agentId: 'w1' } as never)
+  const src = card(await narrow($), 'a rather long task title that has to be cut somewhere'.slice(0, 0)) || (await narrow($)).map(n => imgOf(n as never)?.source ?? '').find(s => s.includes('rather long')) || ''
+  const W = svgW(src)
+  for (const m of src.matchAll(/<text[^>]* x="([\d.]+)"([^>]*)>/g)) {
+    const x = Number(m[1])
+    if (/text-anchor="end"/.test(m[2] ?? '')) expect(x).toBeLessThanOrEqual(W)
+    else expect(x).toBeLessThan(W)
+  }
+  for (const m of src.matchAll(/<rect[^>]* x="([\d.]+)"[^>]* width="([\d.]+)"/g)) expect(Number(m[1]) + Number(m[2])).toBeLessThanOrEqual(W)
+})
+
+test('cards draw crisp 1.5x crabs; planned rows, the compact strip and the band 1x', async ($, on) => {
+  setup(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Flow', phase: 'delegate', total: 2, tasks: [{ title: 'later task', tier: 'medium' }, { title: 'other later', tier: 'heavy' }] } as never)
+  await spawn($, 'now')
+  const all = sources(await draw($))
+  expect(all).toMatch(/scale\(1\.5\)/)
+  expect(all).not.toMatch(/scale\(1\.1\)/)
+  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: PROPS } as never)
+  const band = ((await ui.findAll({})) as unknown as Node[]).map(n => imgOf(n as never)?.source ?? '').join('')
+  await ui.unmount()
+  expect(band).toMatch(/scale\(1\)/)
+})
+
+test('card, planned and background titles share one left edge', async ($, on) => {
+  setup(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Flow', phase: 'delegate', total: 2, tasks: [{ title: 'later task', tier: 'medium' }, { title: 'other later', tier: 'heavy' }] } as never)
+  await spawn($, 'now')
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev', run_in_background: true } as never)
+  const nodes = await draw($)
+  const srcs = nodes.map(n => imgOf(n as never)?.source ?? '')
+  const planned = srcs.find(s => s.includes('later task')) ?? ''
+  const bg = srcs.find(s => s.includes('npm run dev')) ?? ''
+  const crabCol = Number(/<svg[^>]* width="([\d.]+)"/.exec(srcs.find(s => /class="c-\w+/.test(s) && svgW(s) < 80) ?? '')?.[1])
+  expect(Number(/<text class="s" x="([\d.]+)" y="18"/.exec(planned)?.[1])).toBe(crabCol)
+  expect(Number(/<text class="t" x="([\d.]+)" y="16"/.exec(bg)?.[1])).toBe(crabCol)
+})

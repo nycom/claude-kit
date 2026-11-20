@@ -61,7 +61,7 @@ test('crab pixels: every costume, walking or still, dim or not, at either scale,
   for (const costume of costumes)
     for (const isWalking of [false, true])
       for (const dim of [false, true])
-        for (const [x, y, scale] of [[0, 14, 1.1], [1, 3.4, 0.8]] as const) {
+        for (const [x, y, scale] of [[0, 14, 1.5], [1, 3.4, 1]] as const) {
           const was = rectCrab(x, y, costume, dim, isWalking, scale, '#378ADD')
           const now = crab(x, y, costume, dim, isWalking, scale, '#378ADD')
           expect(raster(now)).toEqual(raster(was))

@@ -350,7 +350,7 @@ const noise = (x: number, y: number): number => {
 // the images are the band line's height (23, as skins' band) and draw on H / 2.
 const H = 23
 const BAR_H = 16
-const CRAB_W = 26
+const CRAB_W = 32
 const CELL = 3
 const FONT = "-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',sans-serif"
 
@@ -521,7 +521,7 @@ const bandTopSvg = (f: Flow, W: number): string => {
 
 // The band's crab, beside the layers, walking while an agent runs.
 const bandCrabSvg = (isWorking: boolean): string =>
-  constant(`band-crab|${isWorking}`, () => `<svg xmlns="http://www.w3.org/2000/svg" width="${CRAB_W}" height="${H}" viewBox="0 0 ${CRAB_W} ${H}">${crabCss(isWorking ? ['other'] : [])}${crab(1, crabTop('other', 0.8), 'other', false, isWorking, 0.8)}</svg>`)
+  constant(`band-crab|${isWorking}`, () => `<svg xmlns="http://www.w3.org/2000/svg" width="${CRAB_W}" height="${H}" viewBox="0 0 ${CRAB_W} ${H}">${crabCss(isWorking ? ['other'] : [])}${crab(1, crabTop('other', SMALL_CRAB_SCALE), 'other', false, isWorking, SMALL_CRAB_SCALE)}</svg>`)
 
 const barText = (f: Flow, width: number): string => {
   const filled = Math.round(width * ratio(f))
@@ -882,7 +882,9 @@ const roleOf = (text: string): string | undefined => ROLES.find(([, words]) => w
 const costumeOf = (a: { type: string; description?: string }): string =>
   a.type === 'Explore' ? 'explore' : (roleOf(a.type.replace(/^[^:]*:/, '')) ?? roleOf(a.description ?? '') ?? tierOf(a.type))
 
-const CRAB_SCALE = 1.1
+// Whole device pixels on a 2x screen: cards at 1.5 (3px), everything small at 1 (2px).
+const CARD_CRAB_SCALE = 1.5
+const SMALL_CRAB_SCALE = 1
 
 // A group's pixels of one colour are one path, painted in the order each colour first appears:
 // a row's run of pixels is a rectangle, grown down while the next row repeats it.
@@ -913,7 +915,7 @@ const pixelPath = (rows: Map<number, Set<number>>): string => {
 
 // Body and props nest inside `bd` so a prop rides the bob and adds its own motion;
 // legs stay outside it and step on their own.
-export const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = CRAB_SCALE, tint = colorOf(costume)): string => {
+export const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = SMALL_CRAB_SCALE, tint = colorOf(costume)): string => {
   const groups = new Map<string, Map<string, Map<number, Set<number>>>>([['bd', new Map()]])
   const at = <K, V>(m: Map<K, V>, k: K, make: () => V): V => m.get(k) ?? (m.set(k, make()), m.get(k) as V)
   const f: Fill = (cx, cy, w, h, c, cls = 'bd') => {
@@ -964,14 +966,16 @@ const svg = (W: number, H: number, body: string): string => {
 // A card or a background row is three drawings in a row: the crab column (a background row
 // has none), the data, and the status mark column; the crab and the mark are constant and draw
 // their stretch of the row's bottom line.
-const CARD_CRAB_W = 42
+const CARD_CRAB_W = 50
+// The left edge every row's text shares: cards (after their crab column), planned and background rows.
+const TEXT_X = CARD_CRAB_W
 const MARK_W = 16
 const rowLine = (W: number, h: number): string => `<line class="ln" x1="0" y1="${h - 0.5}" x2="${W}" y2="${h - 0.5}"/>`
 
 const crabColumnSvg = (a: AgentRun, h: number, isWalking: boolean): string => {
   const costume = costumeOf(a)
   const tint = colorOf(tierOf(a.type))
-  return constant(`crab|${costume}|${tint}|${isWalking}|${h}`, () => svg(CARD_CRAB_W, h, `${crabCss(isWalking ? [costume] : [])}${crab(0, 14, costume, false, isWalking, CRAB_SCALE, tint)}\n${rowLine(CARD_CRAB_W, h)}`))
+  return constant(`crab|${costume}|${tint}|${isWalking}|${h}`, () => svg(CARD_CRAB_W, h, `${crabCss(isWalking ? [costume] : [])}${crab(0, 14, costume, false, isWalking, CARD_CRAB_SCALE, tint)}\n${rowLine(CARD_CRAB_W, h)}`))
 }
 
 const markColumnSvg = (h: number, y: number, status: string, color: string, id: string): string =>
@@ -1047,7 +1051,7 @@ const barFill = (a: AgentRun): { width01: number; color: string } | null => {
 const agentSvg = (W: number, a: AgentRun, at: number): string => {
   const s = tr()
   const tier = tierOf(a.type)
-  const textW = W - 42 - 22
+  const textW = W - CARD_CRAB_W - MARK_W - 6
   const meta = [a.effort ? `${modelName(a.model)} · ${a.effort}` : modelName(a.model)]
   if (a.round > 1) meta.push(`${s.round} ${a.round}`)
   if (a.status === 'failed') meta.push(s.failed)
@@ -1064,7 +1068,7 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
   return svg(
     DW,
     h,
-    `<text class="t" x="0" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${flag ? pill(Math.round(textWidth(title, 13) + 8), 6, flag) : ''}
+    `${flag ? pill(0, 6, flag) : ''}<text class="t" x="${flag ? pillW(flag) + 8 : 0}" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>
 <text x="0" y="34" font-family="${FONT}" font-size="11"><tspan class="tc-${tier}">${xml(tier === 'other' ? a.type : tier)}</tspan><tspan class="s"> · ${xml(meta.join(' · '))}</tspan></text>
 <text class="s" x="${barW}" y="34" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(dim)}</text>
 ${note && noteW > 30 ? `<text class="t" x="0" y="49" font-family="${FONT}" font-size="11">${xml(fitText(note, 11, noteW))}</text>` : ''}
@@ -1092,15 +1096,15 @@ const agentAlt = (a: AgentRun): string => {
 const plannedSvg = (W: number, p: Planned): string => {
   const tier = p.tier in TIER_COLOR ? p.tier : 'other'
   const color = colorOf(tier)
-  const textW = W - 42 - 22
+  const textW = W - TEXT_X - 22
   const meta = [TIER_MODEL[tier] ?? '']
   if (p.after.length) meta.push(`${tr().after} ${p.after.join(', ')}`)
   return svg(
     W,
     46,
     `${crab(0, 6, tier, true)}
-<text class="s" x="42" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(`${p.n}. ${p.title}`, 13, textW))}</text>
-<text x="42" y="34" font-family="${FONT}" font-size="11"><tspan class="tc-${tier}">${xml(tier)}</tspan><tspan class="m">  ${xml(meta.filter(Boolean).join('  ·  '))}</tspan></text>
+<text class="s" x="${TEXT_X}" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(`${p.n}. ${p.title}`, 13, textW))}</text>
+<text x="${TEXT_X}" y="34" font-family="${FONT}" font-size="11"><tspan class="tc-${tier}">${xml(tier)}</tspan><tspan class="m"> · ${xml(meta.filter(Boolean).join(' · '))}</tspan></text>
 ${statusMark(W - 8, 16, 'planned', color)}
 <line class="ln" x1="0" y1="45.5" x2="${W}" y2="45.5"/>`,
   )
@@ -1129,7 +1133,7 @@ const compactIconsSvg = (shown: ReturnType<typeof compactIcons>['shown']): strin
         shown
           .map(
             (ic, i) =>
-              crab(i * 36, 0, ic.k, ic.dim, ic.run, CRAB_SCALE, ic.c) +
+              crab(i * 36, 0, ic.k, ic.dim, ic.run, SMALL_CRAB_SCALE, ic.c) +
               (ic.s === 'running' ? platter(i * 36 + 32, 5.5, 3.94, ic.c, ic.id, ic.run) : ic.s === 'failed' ? statusMark(i * 36 + 30, 5, 'failed', '') : ''),
           )
           .join(''),
@@ -1178,13 +1182,13 @@ const BG_H = 40
 // The row's data, beside its mark: W is the whole row's width.
 const bgSvg = (W: number, t: BackgroundTask, at: number): string => {
   const failed = t.status === 'failed' ? tr().isFailed : ''
-  const title = fitText(bgTitle(t), 13, W - 42 - 22 - (failed ? pillW(failed) + 8 : 0))
+  const title = fitText(bgTitle(t), 13, W - TEXT_X - 22 - (failed ? pillW(failed) + 8 : 0))
   return svg(
     W - MARK_W,
     BG_H,
     `<text class="s" x="14" y="25" text-anchor="middle" font-family="${FONT}" font-size="16">${BG_ICON[t.kind]}</text>
-<text class="t" x="42" y="16" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>${failed ? pill(Math.round(42 + textWidth(title, 13) + 8), 4, failed) : ''}
-<text class="s" x="42" y="32" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(bgMeta(t, at))}</text>
+${failed ? pill(TEXT_X, 4, failed) : ''}<text class="t" x="${TEXT_X + (failed ? pillW(failed) + 8 : 0)}" y="16" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>
+<text class="s" x="${TEXT_X}" y="32" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(bgMeta(t, at))}</text>
 ${rowLine(W - MARK_W, BG_H)}`,
   )
 }
