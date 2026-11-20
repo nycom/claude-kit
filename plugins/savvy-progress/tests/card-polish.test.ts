@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { imgOf, PROPS, setup } from './drawing'
+import { end, imgOf, PROPS, setup } from './drawing'
 import type { $T, OnT } from './drawing'
 
 const STEP = 'mcp__savvy-progress__step'
@@ -241,4 +241,27 @@ test('band: the fill is solid, with no dither cells', async ($, on) => {
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Flow', phase: 'delegate', total: 4, done: 3 } as never)
   const src = (await bandNodes($)).map(n => imgOf(n as never)?.source ?? '').join('')
   expect(src).not.toContain('width="2" height="2"')
+})
+
+// The desktop refuses a drawing whose Svg has no alt ("a tree the page cannot draw"); the mock engine does not.
+test('every image in the band and the pane has a non-empty alt, a Client mark included', async ($, on) => {
+  setup(on)
+  on('ui.toast', () => ({ value: undefined }) as never)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Flow', phase: 'delegate', total: 3, done: 1 } as never)
+  await spawn($, 'a')
+  await spawn($, 'b')
+  await $.tool.call({ tool: STEP, done: 1, total: 4, blocked: 'which db?', agentId: 'w1' } as never)
+  const all = [...(await bandNodes($)), ...(await draw($))]
+  const alts = all.flatMap(n => (n.type === 'Svg' ? [(n.props as { alt?: string })?.alt] : n.props?.module === 'hooks/mark.tsx' ? [(n.props?.props as { alt?: string })?.alt] : []))
+  expect(alts.length).toBeGreaterThan(3)
+  for (const alt of alts) expect(typeof alt === 'string' && alt.trim().length > 0).toBe(true)
+})
+
+test('band: the crew button counts the agents on show, not every run on record', async ($, on) => {
+  setup(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Flow', phase: 'delegate', total: 3, done: 0 } as never)
+  for (const d of ['a', 'b', 'c']) await spawn($, d)
+  await end($, 'w1') // ended, and the user moved on: not on show any more
+  const label = (await bandNodes($)).map(n => (n.props as { label?: string })?.label).find(l => /agent/.test(l ?? ''))
+  expect(label).toBe('2 agents')
 })

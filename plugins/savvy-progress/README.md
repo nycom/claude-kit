@@ -9,7 +9,7 @@ A Claude Code mod: a progress bar above the prompt and a live panel of subagents
 ## Tools it adds
 
 - `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks. Only the main session can: a call from a subagent is ignored, so a worker cannot rename, finish or reset the flow.
-- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). The card's bar shows those steps, in the tier's colour; a worker that does not report has no bar, only its time. Each card also shows steps and time ("3/5 · 2:10") and one dim line with context and cost ("ctx 38% · $0.31", or "ctx — · —" before the first request). The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
+- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). The card's bar shows those steps, in the tier's colour (a plain agent's in its role's colour: implement cyan, review magenta, test lime, design rose, Explore slate); a worker that does not report has no bar, only its time. Each card also shows steps and time ("3/5 · 2:10") and one dim line with context and cost ("ctx 38% · ≈$0.31", or "ctx — · —" before the first request). The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
 
 Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`, list prices as of 2026-10-10), not a bill. Cache writes are priced at the 1-hour rate, which is what Claude Code writes on a subscription; a session that writes 5-minute entries is overestimated there.
 
@@ -33,7 +33,7 @@ A toast fires on a crossing only: the failed count reaching three, or a new ques
 - If drawing the panel or the band fails, a dim line says `savvy-progress could not draw this pane: <kind>: <message>` instead of leaving it blank; the band keeps the bands of other mods under it.
 - The group of runs that are no longer working is **Ended · N** (done and failed runs alike). Its header collapses it. A run that ends first stays in Running for a moment, with a still done or failed pose and "took m:ss" / "failed after m:ss", until your next prompt (typed, or from the phone over Remote Control; notifications and schedules don't count). Then it moves to Ended, which collapses on its own once nothing runs; an expand you make stays until the next run ends. Background shells and monitors don't count as running agents here.
 - On the desktop the Ended group shows the 20 that ended last, agents and background rows alike, and a **+K more ended** line for the rest. The desktop drops a whole panel that grows too large, so when the cards would not fit, the panel draws as many as fit and one **+N more running** (or **+K more ended**) line; the terminal lists everything.
-- Text colours meet 4.5:1 on the light and dark host backgrounds: per-theme tier colours, darker meta and percent text, dark labels on the coloured pills, white on the red flag.
+- Text colours meet 4.5:1 on the light and dark host backgrounds: per-theme tier colours, darker meta text, dark labels on the coloured pills, white on the red flag.
 - A planned task of the `medium` tier is labelled Sonnet.
 - After a turn that ends with a `/status` block, the header shows its `STATUS` line and `next gate: <first LEFT item>` (no gate line when nothing is left); a later turn without a block keeps it.
 
@@ -87,12 +87,12 @@ While the skins mod has a dark skin on, its theme wins over the file, and a `/sk
 
 ## Settings
 
-`language`: `auto` (default), `en`, `ru` or `he`. Hebrew draws the bar and the panel right to left. `auto` follows Claude Code's `language` setting, then the system locale, and falls back to English. Set it in `/config`, or, for a mod loaded by hand, in `~/.claude/settings.json`:
+`language`: `auto` (default), `en` or `ru`. `auto` follows Claude Code's `language` setting, then the system locale, and falls back to English. Set it in `/config`, or, for a mod loaded by hand, in `~/.claude/settings.json`:
 
 ```json
 { "pluginConfigs": { "savvy-progress": { "options": { "language": "ru" } } } }
 ```
 
-`autoOpen`: `savvy` (default) or `any`. With `savvy` the panel opens by itself when a `savvy-*` worker starts or a plan is reported. With `any` it also opens, once per session, when any other subagent starts. `/agents-info` toggles it either way.
+`autoOpen`: `any` (default) or `savvy`. With `any` the panel opens by itself, once per flow, when any subagent starts or a plan is reported. With `savvy` only a `savvy-*` worker or a plan opens it. `/agents-info` toggles it either way.
 
 Install instructions are in the [repository README](../../README.md).

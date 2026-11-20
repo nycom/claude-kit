@@ -214,6 +214,7 @@ const STRINGS = {
     nextIn: (t: string) => `next in ${t}`,
     due: 'due',
     moreRunning: (n: number) => `+${n} more running`,
+    morePlanned: (n: number) => `+${n} more planned`,
     moreEnded: (n: number) => `+${n} more ended`,
     stopFailed: (what: string, err: string) => `could not stop ${clip(what, 60)}: ${err}`,
     nextGate: 'next gate',
@@ -258,6 +259,7 @@ const STRINGS = {
     nextIn: (t: string) => `через ${t}`,
     due: 'пора',
     moreRunning: (n: number) => `+${n} ещё работают`,
+    morePlanned: (n: number) => `+${n} ещё запланированы`,
     moreEnded: (n: number) => `+${n} ещё закончили`,
     stopFailed: (what: string, err: string) => `не удалось остановить ${clip(what, 60)}: ${err}`,
     nextGate: 'следующий шаг',
@@ -374,7 +376,7 @@ const WIDE =
 const charEm = (ch: string): number =>
   WIDE.test(ch) ? 1 : /[\s.,:;'|!il1()[\]]/.test(ch) ? 0.3 : /[A-ZА-ЯЁmwшщжюМШЩЖЮ@%]/.test(ch) ? 0.72 : 0.56
 
-const textWidth = (s: string, size: number): number => [...s].reduce((w, ch) => w + charEm(ch) * size, 0)
+export const textWidth = (s: string, size: number): number => [...s].reduce((w, ch) => w + charEm(ch) * size, 0)
 
 // Cuts `s` to fit `maxW` pixels, with an ellipsis when it had to cut.
 const fitText = (s: string, size: number, maxW: number): string => {
@@ -452,11 +454,20 @@ const bandGlowSvg = (): string =>
 <style>.gl{animation:gl 1.6s ease-in-out infinite}@keyframes gl{0%,100%{opacity:.25}50%{opacity:1}}@media (prefers-reduced-motion: reduce){.gl{animation:none}}</style>
 <rect class="gl" y="${(H - BAR_H) / 2}" width="${GLOW_W}" height="${BAR_H}" rx="${BAR_H / 2}" fill="url(#g)"/></svg>`,
   )
-// Where the glow sits, in cells from the row's left edge: centred on the fill's head, inside the bar.
+// The phase pill rides the fill's head; the top layer draws it, the glow sits just past it.
+const pillOf = (f: Flow, W: number) => {
+  const bar = barOf(f, W)
+  const fillW = Math.round(bar.w * ratio(f))
+  const bandPillW = Math.round(18 + label(f).length * 6.6)
+  return { pillX: Math.max(0, Math.min(bar.w - bandPillW, fillW - bandPillW)), bandPillW }
+}
+// Where the glow sits, in cells from the row's left edge: at the pill's right edge (the pill is
+// opaque and drawn over it), inside the bar.
 const glowLeft = (f: Flow, W: number): number => {
   const bar = barOf(f, W)
-  const head = bar.x + Math.round(bar.w * ratio(f))
-  return Math.max(0, Math.round((Math.min(bar.x + bar.w - GLOW_W, Math.max(bar.x, head - GLOW_W / 2))) / 8))
+  const { pillX, bandPillW } = pillOf(f, W)
+  const at = Math.min(bar.x + bar.w - GLOW_W, bar.x + pillX + bandPillW - 4)
+  return Math.max(0, Math.round(at / 8))
 }
 
 // Top layer, over the glow: the task ticks and the pill with the phase.
@@ -470,8 +481,7 @@ const bandTopSvg = (f: Flow, W: number): string => {
     if (x > fillW + 4) ticks.push(`<rect x="${x}" y="${BAR_H / 2 - 4}" width="1.5" height="8" rx="0.75"/>`)
   }
   const text = label(f)
-  const bandPillW = Math.round(18 + text.length * 6.6)
-  const pillX = Math.max(0, Math.min(bar.w - bandPillW, fillW - bandPillW))
+  const { pillX, bandPillW } = pillOf(f, W)
   return bandSvg(
     W,
     `${barClip(bar.w)}
@@ -964,8 +974,13 @@ const headerHeight = (title: string, lines: string[]): number => {
 }
 
 // One dim line in place of the three tiles: "3 running · ≈$0.42 · 4:10", "—" until a request reports usage.
-const summaryText = (running: number, t: ReturnType<typeof totals>): string =>
-  t.tokens > 0 ? `${running} ${tr().busy} · ≈${fmtCost(t.cost)} · ${fmtTime(t.time)}` : `${running} ${tr().busy} · — · —`
+const summaryText = (list: AgentRun[], t: ReturnType<typeof totals>): string => {
+  const running = list.filter(a => a.status === 'running').length
+  const held = list.filter(a => a.status !== 'running' && a.heldDone).length
+  // During the finish hold nothing runs: say what is done instead of "0 running".
+  const head = running || !held ? `${running} ${tr().busy}` : `${held} ${tr().doneWord}`
+  return t.tokens > 0 ? `${head} · ≈${fmtCost(t.cost)} · ${fmtTime(t.time)}` : `${head} · — · —`
+}
 
 const summarySvg = (W: number, text: string): string =>
   svg(W, 20, `<text class="s" x="0" y="14" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">${xml(fitText(text, 12, W))}</text>`)
@@ -1022,10 +1037,13 @@ const cardStats = (a: AgentRun, at: number): { right: string; dim: string } => {
 }
 
 // The bar means progress only: none for an agent that reports no steps. A plain agent takes the accent.
+// A plain agent's bar takes its role's colour (the crab's costume), on hues no tier uses; a savvy
+// tier keeps its own; an agent with no role takes the accent.
+const ROLE_COLOR: Record<string, string> = { implement: '#1FA8B8', review: '#C4479B', test: '#8AA62A', design: '#E0567A', explore: '#7A8FA8' }
 const barFill = (a: AgentRun): { width01: number; color: string } | null => {
   if (!a.stepTotal) return null
   const tier = tierOf(a.type)
-  return { width01: progressOf(a) ?? 0, color: tier === 'other' ? accentOf() : colorOf(tier) }
+  return { width01: progressOf(a) ?? 0, color: tier !== 'other' ? colorOf(tier) : (ROLE_COLOR[costumeOf(a)] ?? accentOf()) }
 }
 
 // The card's data, between its crab and its mark: W is the whole card's width.
@@ -1039,6 +1057,11 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
   if (failedHistory(a)) meta.push(failedHistory(a))
   const barW = textW
   const { right, dim } = cardStats(a, at)
+  // The meta row shares its line with the dim context/cost text: fit it to what is left.
+  const typeLabel = tier === 'other' ? a.type : tier
+  const metaLine = fitText(`${typeLabel} · ${meta.join(' · ')}`, 11, Math.max(0, barW - textWidth(dim, 11) - 12))
+  const metaHead = metaLine.slice(0, Math.min(metaLine.length, typeLabel.length))
+  const metaTail = metaLine.slice(metaHead.length)
   const bar = barFill(a)
   const note = a.stepNote ?? ''
   const noteW = Math.max(0, barW - textWidth(right, 11) - 12)
@@ -1050,7 +1073,7 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
     DW,
     h,
     `${flag ? pill(0, 6, flag) : ''}<text class="t" x="${flag ? pillW(flag) + 8 : 0}" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(title)}</text>
-<text x="0" y="34" font-family="${FONT}" font-size="11"><tspan class="tc-${tier}">${xml(tier === 'other' ? a.type : tier)}</tspan><tspan class="s"> · ${xml(meta.join(' · '))}</tspan></text>
+<text x="0" y="34" font-family="${FONT}" font-size="11"><tspan class="tc-${tier}">${xml(metaHead)}</tspan><tspan class="s">${xml(metaTail)}</tspan></text>
 <text class="s" x="${barW}" y="34" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(dim)}</text>
 ${note && noteW > 30 ? `<text class="t" x="0" y="49" font-family="${FONT}" font-size="11">${xml(fitText(note, 11, noteW))}</text>` : ''}
 <text class="t" x="${barW}" y="49" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(right)}</text>
@@ -1838,7 +1861,7 @@ export const register: Register = (on, options) => {
         )
       }
       const named = [title, ...statusLines].filter(Boolean).join(', ')
-      const line = summaryText(running.length, t)
+      const line = summaryText(running, t)
       const header = (
         <Box key="header" flexDirection="column">
           {headerHeight(title, statusLines) > 0 && <Svg source={headerSvg(W, title, statusLines)} alt={named} width={W} height={headerHeight(title, statusLines)} />}
@@ -1848,15 +1871,17 @@ export const register: Register = (on, options) => {
           </Box>
         </Box>
       )
-      const plannedRows = planned.map(pl => (
+      const planRow = (pl: Planned) => (
         <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
-      ))
+      )
       const budget = budgetOf()
-      for (const el of [header, toggleDone, ...plannedRows]) budget.add(el, true)
-      // Running cards first, then background work; once one does not fit, the rest are a count.
+      for (const el of [header, toggleDone]) budget.add(el, true)
+      // Running cards first, then planned tasks, then background work; once one does not fit, the rest are a count.
       const runCards = budget.take(running, card)
       const isRunCut = runCards.length < running.length
-      const bgRows = isRunCut ? [] : budget.take(bgActive, bgCard)
+      const plannedRows = isRunCut ? [] : budget.take(planned, planRow)
+      const morePlanned = planned.length - plannedRows.length
+      const bgRows = isRunCut || morePlanned > 0 ? [] : budget.take(bgActive, bgCard)
       const moreRunning = running.length + bgActive.length - runCards.length - bgRows.length
       // The newest ended items, agents and rows alike, drawn in the group's order: agents, then rows.
       const endedAt = (x: { startedAt: number; endedAt?: number }) => x.endedAt ?? x.startedAt
@@ -1875,6 +1900,7 @@ export const register: Register = (on, options) => {
           {isRunCut && moreRun}
           {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
           {plannedRows}
+          {morePlanned > 0 && section('more-plan', s.morePlanned(morePlanned))}
           {bgActive.length > 0 && !isRunCut && section('h-bg', `${s.background} · ${bgActive.length}`)}
           {bgRows}
           {!isRunCut && moreRunning > 0 && moreRun}
@@ -1964,7 +1990,7 @@ export const register: Register = (on, options) => {
             {l}
           </Text>
         ))}
-        <Text dimColor>{summaryText(running.length, t)}</Text>
+        <Text dimColor>{summaryText(running, t)}</Text>
         {p.isCompact ? (
           <Box flexDirection="column">
             <Text wrap="truncate-end">
@@ -2034,9 +2060,10 @@ export const register: Register = (on, options) => {
 
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
-    const crew = list.length + plannedOf(f, list).length
+    // The agents on show (running or held); with none, the whole crew including planned tasks.
+    const crew = list.filter(isShownRunning).length || list.length + plannedOf(f, list).length
     const isWorking = list.some(a => a.status === 'running')
-    // ponytail: Button has no accessible-label prop; the visible `×N` is all a reader gets.
+    // ponytail: Button has no accessible-label prop; the visible "N agents" is all a reader gets.
     const crewButton = (
       <Button key="savvy-agents" label={`${crew} ${crew === 1 ? tr().agent : tr().agentsCount}`} plain onPress={() => void togglePane($)} />
     )
@@ -2115,7 +2142,8 @@ export const register: Register = (on, options) => {
                 {/* A finished or idle bar holds still: an idle window would otherwise repaint the veil forever. */}
                 {!f.isFinished && isBusy && (
                   <Box position="absolute" top={0} left={glowLeft(f, width)}>
-                    {loop('band-glow', { source: bandGlowSvg(), alt: '', width: GLOW_W, height: H })}
+                    {/* The alt is required (the desktop refuses an empty one) and stable, or the glow would restart. */}
+                    {loop('band-glow', { source: bandGlowSvg(), alt: f.title, width: GLOW_W, height: H })}
                   </Box>
                 )}
                 <Box position="absolute" top={0} left={0}>
