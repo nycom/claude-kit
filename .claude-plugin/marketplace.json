@@ -42,6 +42,12 @@
       },
       "description": "Mod: keeps the one-hour prompt cache warm during breaks and warns once before a cold send.",
       "category": "mod"
+    },
+    {
+      "name": "session-band",
+      "source": "./plugins/session-band",
+      "description": "Mod: band above the prompt with turn, speed, cost, prompt cache countdown and context; notifies before the cache expires.",
+      "category": "mod"
     }
   ]
 }

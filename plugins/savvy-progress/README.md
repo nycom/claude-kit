@@ -4,14 +4,14 @@ A Claude Code mod: a progress bar above the prompt and a live panel of subagents
 
 - **Progress bar**: the flow's title, phase, accepted tasks out of planned, and a button with the crew size that opens the panel. It appears once something reports progress (savvy-flow does) or a `savvy-*` worker starts.
 - **Auto-progress**: during a workflow run, agents whose label starts with a planned task's title (the longest matching title wins) move the bar on their own, by the label's next word: `implement` to delegate; `review`, `fix`, `validate` and `recheck` to review; `merge` and `docs` to close. The delegate skill's labels fit: "<task> implement", "<task> review c1", "<task> merge", "<repo> docs". Each "<task> merge" that ends with an answer counts that task done (the agent's turn is all the bar sees, so a merge that answered with a conflict still counts until the coordinator's `progress` `done` corrects it). The last "… docs" agent to answer, once every task has merged and no task or docs agent is still running, finishes the flow; a docs agent that failed does not. Phase never goes back and `done` never drops. A `progress` call still overwrites, and one without a title carries on the current flow even after the labels finished it, so the skill's closing `done` and `finished` calls land on it; a new title starts a new flow.
-- **Agents panel** (`/agents-info` toggles it): running, ended and planned subagents with model, effort, task progress, context, estimated cost and time. Working crabs walk, and each savvy tier animates its prop: the astronaut floats, the detective sweeps the magnifier, the engineer turns the wrench, the chef tosses the omelette, the racer runs with a fluttering flag. A worker with a role wears it instead, read from its type's name, then its task: the reviewer ticks a clipboard behind round glasses, the tester's test tube bubbles, the designer paints in a beret, the implementer types at a laptop in a beanie; the card keeps its tier's colour. Explore is always the pirate. `prefers-reduced-motion` stops them. A running agent or background task also carries a status mark that turns like a 33⅓ platter, each out of step with the others. On the desktop only the three most recent running agents animate (then background tasks, if fewer than three agents run); the rest hold their first frame until one of those ends.
+- **Agents panel** (`/agents-info` toggles it; `/agents-info open` opens it or brings it forward without toggling): running, ended and planned subagents with model, effort, task progress, context, estimated cost and time. Working crabs walk, and each savvy tier animates its prop: the astronaut floats, the detective sweeps the magnifier, the engineer turns the wrench, the chef tosses the omelette, the racer runs with a fluttering flag. A worker with a role wears it instead, read from its type's name, then its task: the reviewer ticks a clipboard behind round glasses, the tester's test tube bubbles, the designer paints in a beret, the implementer types at a laptop in a beanie; the card keeps its tier's colour. Explore is always the pirate. `prefers-reduced-motion` stops them. A running agent or background task also carries a status mark that turns like a 33⅓ platter, each out of step with the others. On the desktop only the three most recent running agents animate (then background tasks, if fewer than three agents run); the rest hold their first frame until one of those ends.
 
 ## Tools it adds
 
-- `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks.
-- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). A worker that does not report shows its context fill in grey instead.
+- `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks. Only the main session can: a call from a subagent is ignored, so a worker cannot rename, finish or reset the flow.
+- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). A worker that does not report shows its context fill in grey instead. The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
 
-Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`), not a bill.
+Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`, list prices as of 2026-10-10), not a bill. Cache writes are priced at the 1-hour rate, which is what Claude Code writes on a subscription; a session that writes 5-minute entries is overestimated there.
 
 ## Attention flags
 
@@ -28,7 +28,7 @@ A toast fires on a crossing only: the failed count reaching three, or a new ques
 
 ## Panel behaviour
 
-- The panel opens by itself when any subagent starts, once per flow; closing it is not undone until the next flow.
+- The panel opens by itself when any subagent starts, once per flow; closing it is not undone until the next flow. The `autoOpen` option set to `savvy` limits that to savvy workers and plans.
 - The panel lists Running, then Planned, then Background, and the Ended group last.
 - If drawing the panel or the band fails, a dim line says `savvy-progress could not draw this pane: <kind>: <message>` instead of leaving it blank; the band keeps the bands of other mods under it.
 - The group of runs that are no longer working is **Ended · N** (done and failed runs alike). Its header collapses it, and it collapses on its own when the last running agent ends; an expand you make stays until the next run ends. Background shells and monitors don't count as running agents here.
@@ -87,10 +87,12 @@ While the skins mod has a dark skin on, its theme wins over the file, and a `/sk
 
 ## Settings
 
-`language`: `auto` (default), `en` or `ru`. `auto` follows Claude Code's `language` setting, then the system locale, and falls back to English. Set it in `/config`, or, for a mod loaded by hand, in `~/.claude/settings.json`:
+`language`: `auto` (default), `en`, `ru` or `he`. Hebrew draws the bar and the panel right to left. `auto` follows Claude Code's `language` setting, then the system locale, and falls back to English. Set it in `/config`, or, for a mod loaded by hand, in `~/.claude/settings.json`:
 
 ```json
 { "pluginConfigs": { "savvy-progress": { "options": { "language": "ru" } } } }
 ```
+
+`autoOpen`: `savvy` (default) or `any`. With `savvy` the panel opens by itself when a `savvy-*` worker starts or a plan is reported. With `any` it also opens, once per session, when any other subagent starts. `/agents-info` toggles it either way.
 
 Install instructions are in the [repository README](../../README.md).

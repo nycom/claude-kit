@@ -24,8 +24,20 @@ const LOOPS = 3
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
+// Added to the end of each savvy worker's brief. Their system prompt words step
+// reporting as a condition ("if the step tool appears among your tools") and they
+// skip it even with the tool listed; the same request in the brief is followed.
+const STEP_BRIEF = `
+
+Progress reporting: before any other work, call \`${STEP_TOOL}\` with \`total\` (your plan in 3-8 steps) and \`done: 0\`; call it again with \`done\` and a few-word \`note\` as each step finishes. It only draws a progress bar.`
 const PANE = 'savvy-agents'
 const PHASES: readonly Phase[] = ['plan', 'design', 'delegate', 'review', 'close']
+const TIERS: readonly string[] = ['fable', 'heavy', 'careful', 'medium', 'light']
+// The tools' schemas are advice to the model, not a check: what a call may ask
+// the band and the panel to draw is bounded here.
+const MAX_TASKS = 200
+const MAX_AFTER = 20
+const MAX_TITLE = 120
 const ACCENT = '#8f8cf4'
 const DONE = '#5fbf8f'
 const THEME_FILE = '.local/state/omarchy/current/theme/colors.toml'
@@ -278,27 +290,34 @@ const blank = (): Flow => ({
 // A call with no title carries on the flow it finds, finished or not: the delegate skill's close
 // (`done`, then `finished`) lands on a flow the agent labels already finished.
 const isNewFlow = (prev: Flow | null, input: ProgressInput): boolean =>
-  !prev || (input.title !== undefined && (prev.isFinished || oneLine(input.title) !== prev.title))
+  !prev || (input.title !== undefined && (prev.isFinished || clip(oneLine(input.title), MAX_TITLE) !== prev.title))
+
+// Only a known tier is kept: the name is later a key into the tier tables.
+const tierName = (v: string): string => {
+  const t = v.replace(/^savvy-/, '').trim().toLowerCase()
+  return TIERS.includes(t) ? t : ''
+}
 
 const cleanTasks = (tasks: ProgressInput['tasks']): PlannedTask[] | undefined =>
   tasks
     ?.filter(t => oneLine(t.title))
+    .slice(0, MAX_TASKS)
     .map(t => ({
-      title: oneLine(t.title),
-      tier: (t.tier ?? '').replace(/^savvy-/, '').trim().toLowerCase(),
-      after: (t.after ?? []).filter(n => Number.isInteger(n) && n > 0),
+      title: clip(oneLine(t.title), MAX_TITLE),
+      tier: tierName(t.tier ?? ''),
+      after: (t.after ?? []).filter(n => Number.isInteger(n) && n > 0).slice(0, MAX_AFTER),
     }))
 
 const merge = (prev: Flow | null, input: ProgressInput): Flow => {
   // A new title means a new flow: never carry counters over from an earlier one.
   const base = isNewFlow(prev, input) || !prev ? blank() : { ...blank(), ...prev }
   const tasks = cleanTasks(input.tasks) ?? base.tasks
-  const total = Math.max(0, Math.round(input.total ?? (input.tasks ? tasks.length : base.total)))
+  const total = Math.min(MAX_TASKS, Math.max(0, Math.round(input.total ?? (input.tasks ? tasks.length : base.total))))
   const done = Math.min(total || Infinity, Math.max(0, Math.round(input.done ?? base.done)))
   const phase = input.phase && PHASES.includes(input.phase) ? input.phase : base.phase
   return {
     ...base,
-    title: oneLine(input.title) || base.title,
+    title: clip(oneLine(input.title) || base.title, MAX_TITLE),
     total,
     done,
     phase: input.finished ? 'close' : phase,
@@ -340,9 +359,14 @@ const xml = (s: string): string =>
 
 const clip = (s: string, max: number): string => (s.length > max ? s.slice(0, Math.max(1, max - 1)) + '…' : s)
 
+// CJK, fullwidth forms and emoji advance about 1em; at 0.56em a Chinese title was sized at half its width and the bar drew over it.
+// 中日韩文字、全角标点和 emoji 约占 1em；按 0.56em 算时中文标题宽度被低估近一半，进度条会压到标题上。
+const WIDE =
+  /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF01-\uFF60\uFFE0-\uFFE6\u{1F300}-\u{1FAFF}\u{20000}-\u{3FFFD}]/u
+
 // Rough advance of system UI text, in em; good enough to size the title's slot.
 const charEm = (ch: string): number =>
-  /[\s.,:;'|!il1()[\]]/.test(ch) ? 0.3 : /[A-ZА-ЯЁmwшщжюМШЩЖЮ@%]/.test(ch) ? 0.72 : 0.56
+  WIDE.test(ch) ? 1 : /[\s.,:;'|!il1()[\]]/.test(ch) ? 0.3 : /[A-ZА-ЯЁmwшщжюМШЩЖЮ@%]/.test(ch) ? 0.72 : 0.56
 
 const textWidth = (s: string, size: number): number => [...s].reduce((w, ch) => w + charEm(ch) * size, 0)
 
@@ -541,15 +565,29 @@ const TIER_MODEL: Record<string, string> = {
   light: 'Opus · low',
 }
 
-// USD per million tokens: input, output, cache read, cache write (5-minute TTL).
-// The engine reports tokens, not money, so the panel's cost is an estimate.
-const PRICES: [RegExp, [number, number, number, number]][] = [
-  [/fable|mythos/, [10, 50, 0.25, 12.5]],
-  [/opus-5-5/, [4, 20, 0.2, 5]],
-  [/opus/, [5, 25, 0.5, 6.25]],
-  [/sonnet/, [2, 10, 0.2, 2.5]],
-  [/haiku/, [1, 5, 0.1, 1.25]],
+// USD per million tokens: input, output, cache read, cache write. The first row that
+// matches a model id wins, so a release sits above its family.
+// The engine reports tokens, not money, so the panel's cost is an estimate. It reports
+// one cache-write count with no split by lifetime; writes are priced at the 1-hour
+// rate (2x input), which is what Claude Code writes on a subscription.
+type Price = [input: number, output: number, cacheRead: number, cacheWrite: number]
+
+const PRICES: [RegExp, Price][] = [
+  [/(fable|mythos)-5-1/, [10, 50, 0.25, 20]],
+  [/fable|mythos/, [10, 50, 1, 20]],
+  [/opus-5-5/, [4, 20, 0.2, 8]],
+  [/opus/, [5, 25, 0.5, 10]],
+  [/sonnet-5-5/, [2, 10, 0.1, 4]],
+  [/sonnet-5/, [2, 10, 0.2, 4]],
+  [/sonnet/, [3, 15, 0.3, 6]],
+  [/haiku-5-5/, [0.1, 0.5, 0.01, 0.2]],
+  [/haiku/, [1, 5, 0.1, 2]],
 ]
+
+// Haiku 5.5 is priced by prompt length: a request whose prompt (input, cache reads and
+// cache writes together) is over 100,000 tokens pays these prices instead.
+const HAIKU_LONG_PROMPT = 100_000
+const HAIKU_LONG: Price = [0.5, 2.5, 0.05, 1]
 
 type Usage = {
   input_tokens: number
@@ -558,11 +596,17 @@ type Usage = {
   cache_creation_input_tokens: number
 }
 
-const priceOf = (model: string): [number, number, number, number] =>
-  PRICES.find(([re]) => re.test(model.toLowerCase()))?.[1] ?? [4, 20, 0.2, 5]
+const priceOf = (model: string, prompt: number): Price => {
+  const id = model.toLowerCase()
+  if (prompt > HAIKU_LONG_PROMPT && /haiku-5-5/.test(id)) return HAIKU_LONG
+  return PRICES.find(([re]) => re.test(id))?.[1] ?? [4, 20, 0.2, 8]
+}
 
-const costOf = (model: string, u: Usage): number => {
-  const [i, o, r, w] = priceOf(model)
+// `isRequest` says the usage is one model request, which is what a prompt-length price
+// is set by; a turn's sum is priced at the model's ordinary prices.
+const costOf = (model: string, u: Usage, isRequest: boolean): number => {
+  const prompt = isRequest ? (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) : 0
+  const [i, o, r, w] = priceOf(model, prompt)
   return (
     ((u.input_tokens || 0) * i +
       (u.output_tokens || 0) * o +
@@ -572,13 +616,14 @@ const costOf = (model: string, u: Usage): number => {
   )
 }
 
-const windowOf = (model: string): number => (/haiku/i.test(model) ? 200_000 : 1_000_000)
+// Haiku 4.5 and the Claude 3 models have a 200K window; the rest, Haiku 5.5 included, 1M.
+const windowOf = (model: string): number => (/haiku-4|claude-3/i.test(model) ? 200_000 : 1_000_000)
 
 // `savvy-careful`, or `savvy-flow:savvy-careful` when the agents ship in a plugin.
 const tierOf = (type: string): string => {
   const bare = type.replace(/^[^:]*:/, '')
   const t = bare.replace(/^savvy-/, '').toLowerCase()
-  return t in TIER_COLOR && bare.startsWith('savvy-') ? t : 'other'
+  return Object.hasOwn(TIER_COLOR, t) && bare.startsWith('savvy-') ? t : 'other'
 }
 
 const modelName = (id: string): string => {
@@ -1322,7 +1367,8 @@ export const register: Register = (on, options) => {
       description:
         'Report /savvy-flow progress to the progress bar above the prompt and the agents panel. ' +
         'Call it after presenting the plan (title, total, tasks, phase "delegate"), each time a task is accepted (done), ' +
-        'when switching phase or re-planning (tasks), and once at the end with finished: true. Fields left out keep their previous value.',
+        'when switching phase or re-planning (tasks), and once at the end with finished: true. Fields left out keep their previous value. ' +
+        'For the main session only: a call from a subagent is ignored (workers report with `step`).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1339,7 +1385,7 @@ export const register: Register = (on, options) => {
               type: 'object',
               properties: {
                 title: { type: 'string', description: 'A few words; reused verbatim as the Agent description.' },
-                tier: { type: 'string', enum: ['fable', 'heavy', 'careful', 'medium', 'light'] },
+                tier: { type: 'string', enum: [...TIERS] },
                 after: { type: 'array', items: { type: 'integer' }, description: 'Numbers of the tasks this one waits for.' },
               },
               required: ['title', 'tier'],
@@ -1373,6 +1419,8 @@ export const register: Register = (on, options) => {
         },
         required: ['done'],
       },
+      // In every agent's tool list, not behind ToolSearch: workers do not go looking for it.
+      isDeferred: false,
     })
     await $.command.register({
       name: 'agents-info',
@@ -1388,12 +1436,22 @@ export const register: Register = (on, options) => {
     return started
   })
 
-  on('command.run', { command: 'agents-info' }, async $ => {
+  on('command.run', { command: 'agents-info' }, async ($, e) => {
+    // `/agents-info open` opens the panel, or brings it forward from behind another tab, without toggling it.
+    if ((e.args ?? '').trim() === 'open') {
+      const at = await $.clock.now()
+      await update($, now, () => at)
+      await $.ui.open({ id: PANE, title: tr().pane })
+      return { text: tr().opened }
+    }
     const isOpen = await togglePane($)
     return { text: isOpen ? tr().opened : tr().closed }
   })
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
+    // The flow is the main session's: a call from a worker's loop carries its agentId
+    // and changes nothing, or any subagent could rename, finish or reset the flow.
+    if (e.agentId) return { result: 'ignored: only the main session reports the flow' }
     const input = e as unknown as ProgressInput
     const prev = await read($, flow)
     if (isNewFlow(prev, input) && input.title !== undefined) {
@@ -1410,12 +1468,14 @@ export const register: Register = (on, options) => {
     const input = e as unknown as { done?: number; total?: number; note?: string; failed?: boolean; blocked?: string }
     const agentId = e.agentId
     if (!agentId) return { result: 'ignored: only subagents report steps' }
+    let matched = false
     const s = tr()
     const alerts: string[] = []
     await update($, agents, list => {
       alerts.length = 0
       return list.map(a => {
         if (a.agentId !== agentId) return a
+        matched = true
         const total = Math.max(0, Math.round(input.total ?? a.stepTotal ?? 0))
         const done = Math.max(0, Math.round(input.done ?? a.stepDone ?? 0))
         const stepDone = total ? Math.min(total, done) : done
@@ -1437,7 +1497,7 @@ export const register: Register = (on, options) => {
       })
     })
     for (const alert of alerts) $.ui.toast(alert)
-    return { result: 'ok' }
+    return { result: matched ? 'ok' : `ignored: no panel row for agent ${agentId}` }
   })
 
   // Safety net: worker launches move the faint layer even if the orchestrator forgets to report.
@@ -1527,7 +1587,8 @@ export const register: Register = (on, options) => {
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const started = await next(e)
+    const isUnbriefed = e.subagentType.startsWith('savvy-') && !e.prompt.includes(STEP_TOOL)
+    const started = await next(isUnbriefed ? { ...e, prompt: e.prompt + STEP_BRIEF } : e)
     if (started.deny !== undefined) return started
 
     const at = await $.clock.now()
@@ -1553,8 +1614,11 @@ export const register: Register = (on, options) => {
     await update($, flow, f => autoFlow(f, spawned, spawned.find(a => a.id === (started.agentId ?? e.tool_use_id))))
     await update($, now, () => at)
     await retick($)
-    const f = await read($, flow)
-    await autoOpen($, f && !f.isFinished ? f.title : 'savvy-flow')
+    // The default 'any' opens the pane for every subagent; 'savvy' keeps it for savvy workers only.
+    if (options.autoOpen !== 'savvy' || e.subagentType.startsWith('savvy-')) {
+      const f = await read($, flow)
+      await autoOpen($, f && !f.isFinished ? f.title : 'savvy-flow')
+    }
     return started
   })
 
@@ -1569,7 +1633,7 @@ export const register: Register = (on, options) => {
 
     const model = usage.model || e.model
     await update($, agents, list =>
-      list.map(a =>
+      list.map((a): AgentRun =>
         a.agentId !== agentId
           ? a
           : {
@@ -1590,7 +1654,7 @@ export const register: Register = (on, options) => {
                 (usage.output_tokens || 0) +
                 (usage.cache_read_input_tokens || 0) +
                 (usage.cache_creation_input_tokens || 0),
-              costUsd: a.costUsd + costOf(model, usage),
+              costUsd: a.costUsd + costOf(model, usage, true),
               steps: a.steps + 1,
             },
       ),
@@ -1606,7 +1670,7 @@ export const register: Register = (on, options) => {
       const at = await $.clock.now()
       let wasRunning = false
       const after = await update($, agents, list =>
-        list.map(a => {
+        list.map((a): AgentRun => {
           if (a.agentId !== agentId) return a
           wasRunning = a.status === 'running'
           // A run whose steps went unseen still gets the turn's own sum.
@@ -1625,7 +1689,7 @@ export const register: Register = (on, options) => {
                     e.usage.output_tokens +
                     e.usage.cache_read_input_tokens +
                     e.usage.cache_creation_input_tokens,
-                  costUsd: costOf(e.usage.model || a.model, e.usage),
+                  costUsd: costOf(e.usage.model || a.model, e.usage, false),
                 }
               : {}),
           }
@@ -1952,7 +2016,9 @@ export const register: Register = (on, options) => {
     // With no flow the band still shows up for agents that need attention.
     if ((f === null && !flagged) || e.props.hasSurvey) return next(e)
     // The band sits above what the mods beneath draw (skins' rings, cache-tax), never in its place.
-    const theirs = await next(e)
+    // Claude Code's own placeholder ({ type: 'engine' }) is never nested: the desktop drops a band that nests it.
+    const drawn = await Promise.resolve(next(e)).catch(() => null)
+    const theirs = drawn && typeof drawn === 'object' && (drawn as { type?: string }).type !== 'engine' ? drawn : null
 
     const ui = $.ui.resolve(e)
     const { Box, Text, Button } = ui
@@ -1994,6 +2060,7 @@ export const register: Register = (on, options) => {
       />
     )
 
+    // The terminal's element table is completed with an `Svg` that draws nothing: test the surface too.
     if (e.surface !== 'terminal' && 'Svg' in ui) {
       const { Svg } = ui
       // The twinkle runs only while something works: a subagent, or the main session's own turn.
