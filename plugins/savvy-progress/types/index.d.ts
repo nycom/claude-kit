@@ -42,6 +42,8 @@ export type AgentRun = {
   failedAttempts?: number
   /** The question the worker is waiting on; its next `step` call without it clears it. */
   blocked?: string
+  /** An ended run held in Running, with its done or failed pose, until the user's next prompt. */
+  heldDone?: boolean
 }
 
 /** Background work that is not a subagent: shells and monitors run, crons and wakeups wait. */

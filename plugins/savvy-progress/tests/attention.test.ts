@@ -12,6 +12,7 @@ test('step flags failed and blocked workers, toasting once per reason', async ($
   let n = 0
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `w${++n}` }))
   on('turn.complete', () => ({ text: '' }))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
 
   const spawn = (description: string) =>
     $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
@@ -85,6 +86,7 @@ const setup = (on: Parameters<Parameters<typeof test>[1]>[1], below = '', toasts
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
   on('turn.complete', () => ({ text: '' }))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
 }
 const spawnW1 = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
   $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'pick db', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
@@ -104,6 +106,7 @@ test('an ended worker is no longer flagged: the band chip and the card clear', a
   expect(await mountText($, 'terminal', 'Pane')).toContain('Needs input')
 
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: 'w1', agentId: 'w1' } as never)
+  await $.prompt.submit({ text: 'next', wait: false, origin: { kind: 'composer' } } as never) // the user moves on: the hold ends
   expect(await mountText($, 'terminal', 'AbovePrompt')).not.toContain('needs attention')
   expect(await mountText($, 'terminal', 'Pane')).not.toContain('Needs input')
 })
@@ -142,6 +145,7 @@ test('an ended worker drops the failed flag but keeps the count in its meta', as
   await spawnW1($)
   for (let i = 0; i < 3; i++) await stepW1($, { failed: true })
   await $.turn.complete({ reason: 'error', answer: '', durationMs: 0, isAborted: false, turnId: 'w1', agentId: 'w1' } as never)
+  await $.prompt.submit({ text: 'next', wait: false, origin: { kind: 'composer' } } as never) // the user moves on: the hold ends
   // The last run ended, so the finished group folded: open it to read the card.
   const pane = await $.ui.mount({ plugin: 'savvy-progress', surface: 'terminal', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
   await $.ui.press({ plugin: 'savvy-progress', key: 'done' })

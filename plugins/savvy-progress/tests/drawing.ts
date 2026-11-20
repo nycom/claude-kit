@@ -32,8 +32,12 @@ export const setup = (on: OnT) => {
 
 export const spawn = ($: $T, description: string, subagentType = 'general-purpose') =>
   $.agent.spawn({ tool_use_id: description, prompt: '', description, subagentType, provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
-export const end = ($: $T, agentId: string, reason = 'answer') =>
-  $.turn.complete({ reason, answer: '', durationMs: 0, isAborted: false, turnId: agentId, agentId } as never)
+// An agent's turn ends. By default the user then sends the next prompt, which ends the finish hold
+// (P7) and moves the run to Ended; `release: false` keeps it held in Running.
+export const end = async ($: $T, agentId: string, reason = 'answer', release = true) => {
+  await $.turn.complete({ reason, answer: '', durationMs: 0, isAborted: false, turnId: agentId, agentId } as never)
+  if (release) await $.prompt.submit({ text: 'next', wait: false, origin: { kind: 'composer' } } as never)
+}
 export const bash = ($: $T, command = 'npm run dev -- --port 5173') => $.tool.call({ tool: 'Bash', command, run_in_background: true } as never)
 export const finish = ($: $T, id: string) =>
   $.prompt.submit({

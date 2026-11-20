@@ -200,6 +200,8 @@ const STRINGS = {
     tasks: 'Tasks',
     review: 'Review',
     busy: 'running',
+    took: 'took',
+    failedAfter: 'failed after',
     isFailed: 'failed',
     needsInput: 'Needs input',
     failedFlag: 'Failed',
@@ -241,6 +243,8 @@ const STRINGS = {
     tasks: 'Задачи',
     review: 'Ревью',
     busy: 'в работе',
+    took: 'заняло',
+    failedAfter: 'ошибка через',
     isFailed: 'с ошибкой',
     needsInput: 'Нужен ответ',
     failedFlag: 'Неудач',
@@ -1013,6 +1017,9 @@ const progressOf = (a: AgentRun): number | null => {
   return null
 }
 
+// Running, or ended and held for the finish moment: drawn in the Running group, never looping once ended.
+const isShownRunning = (a: AgentRun): boolean => a.status === 'running' || a.heldDone === true
+
 // A running worker waiting on a question, or one whose attempts keep failing; an ended one is history.
 const needsAttention = (a: AgentRun): boolean => a.status === 'running' && (!!a.blocked || (a.failedAttempts ?? 0) >= 3)
 
@@ -1035,7 +1042,9 @@ const ctxOf = (a: AgentRun): number => (a.contextMax ? Math.min(100, Math.round(
 // ("—" until the first model request reports usage).
 const cardStats = (a: AgentRun, at: number): { right: string; dim: string } => {
   const time = fmtTime(elapsed(a, at))
-  const right = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal} · ${time}` : time
+  const s = tr()
+  const when = a.status === 'done' ? `${s.took} ${time}` : a.status === 'failed' ? `${s.failedAfter} ${time}` : time
+  const right = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal} · ${when}` : when
   const dim = a.tokens > 0 ? `ctx ${ctxOf(a)}% · ≈${fmtCost(a.costUsd)}` : 'ctx — · —'
   return { right, dim }
 }
@@ -1115,8 +1124,8 @@ ${statusMark(W - 8, 16, 'planned', color)}
 const compactIcons = (W: number, list: AgentRun[], planned: Planned[], isLooping: (a: AgentRun) => boolean) => {
   const icons = [
     // Newest first, as in the full pane: a narrow cut keeps the three that loop.
-    ...list.filter(a => a.status === 'running').reverse().map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: 'running', dim: false, id: a.id, run: isLooping(a) })),
-    ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false, id: a.id, run: false })),
+    ...list.filter(isShownRunning).reverse().map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false, id: a.id, run: isLooping(a) })),
+    ...list.filter(a => !isShownRunning(a)).map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type)), s: a.status, dim: false, id: a.id, run: false })),
     ...planned.map(p => ({ k: p.tier in TIER_COLOR ? p.tier : 'other', c: colorOf(p.tier), s: 'planned', dim: true, id: '', run: false })),
   ]
   const shown = icons.slice(0, Math.max(1, Math.floor((W - 150) / 36)))
@@ -1551,6 +1560,15 @@ export const register: Register = (on, options) => {
 
   // A background task's notification ends it: `<task-id>` and `<status>` in its text.
   on('prompt.submit', async ($, e, next) => {
+    // The user's own next prompt (typed, or from the phone) ends the finish moment: held runs move to
+    // Ended, which folds once nothing runs. Notifications, schedules and peers never do.
+    if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') {
+      const list = await read($, agents)
+      if (list.some(a => a.heldDone)) {
+        const after = await update($, agents, l => l.map(a => (a.heldDone ? { ...a, heldDone: undefined } : a)))
+        if (!after.some(a => a.status === 'running')) await update($, panel, prev => ({ ...prev, isDoneCollapsed: true }))
+      }
+    }
     if (e.origin.kind === 'task-notification') {
       for (const [block] of e.text.matchAll(/<task-notification>[\s\S]*?<\/task-notification>/g)) {
         const tag = (k: string) => new RegExp(`<${k}>([^<]*)</${k}>`).exec(block)?.[1]?.trim()
@@ -1697,6 +1715,8 @@ export const register: Register = (on, options) => {
             endedAt: at,
             // An ended worker can no longer take an answer.
             blocked: undefined,
+            // Held in Running with its pose until the user's next prompt (P7); then it moves to Ended.
+            heldDone: a.status === 'running' ? true : a.heldDone,
             ...(fallback && e.usage
               ? {
                   model: e.usage.model || a.model,
@@ -1711,8 +1731,6 @@ export const register: Register = (on, options) => {
           }
         }),
       )
-      // The last running agent ended: fold the finished group once; a manual expand stays until the next run ends.
-      if (wasRunning && !after.some(a => a.status === 'running')) await update($, panel, prev => ({ ...prev, isDoneCollapsed: true }))
       if (wasRunning) await update($, flow, f => autoFlow(f, after, after.find(a => a.agentId === agentId)))
       await update($, now, () => at)
       await retick($)
@@ -1744,8 +1762,8 @@ export const register: Register = (on, options) => {
     const bg = uniqById(await read($, background))
     const at = Math.max(await read($, now), ...list.map(a => a.startedAt), ...bg.map(t => t.startedAt), 0)
 
-    const running = list.filter(a => a.status === 'running').reverse()
-    const finished = list.filter(a => a.status !== 'running').reverse()
+    const running = list.filter(isShownRunning).reverse()
+    const finished = list.filter(a => !isShownRunning(a)).reverse()
     const planned = plannedOf(f, list)
     const bgActive = bg.filter(isActive).reverse()
     const bgEnded = bg.filter(x => !isActive(x)).reverse()
@@ -1796,7 +1814,7 @@ export const register: Register = (on, options) => {
       // Agents first: a long-lived server, or a task reconcile found (started "now"), is not work.
       const recent = <T extends { startedAt: number }>(xs: T[]) => [...xs].sort((x, y) => y.startedAt - x.startedAt)
       const looping = new Set<AgentRun | BackgroundTask>(
-        [...recent(running), ...recent(bg.filter(x => x.status === 'running'))].slice(0, LOOPS),
+        [...recent(running.filter(a => a.status === 'running')), ...recent(bg.filter(x => x.status === 'running'))].slice(0, LOOPS),
       )
       // A looping drawing (see `constant`) is a Client (mark.tsx), kept across redraws by its run's key; a still one, an image.
       const drawing = (key: string, isLooping: boolean, props: MarkProps) =>
