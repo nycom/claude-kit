@@ -10,12 +10,22 @@
     "language": {
       "type": "string",
       "title": "Panel language",
-      "description": "auto follows Claude Code's language setting, then the system locale",
+      "description": "auto follows Claude Code's language setting, then the system locale; en or ru",
       "default": "auto",
       "options": [
         "auto",
         "en",
         "ru"
+      ]
+    },
+    "autoOpen": {
+      "type": "string",
+      "title": "Open the agents panel",
+      "description": "any: when any subagent starts or a plan is reported; savvy: only for savvy-flow workers and plans",
+      "default": "any",
+      "options": [
+        "savvy",
+        "any"
       ]
     }
   },

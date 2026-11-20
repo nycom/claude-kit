@@ -28,7 +28,7 @@ test('theme: colors.toml recolours the pane; a missing file keeps the defaults',
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   // A question flags the card: its red pill is drawn, so the red rule is in the pane.
-  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, blocked: 'which db?', agentId: 'w1' } as never)
+  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, total: 4, blocked: 'which db?', agentId: 'w1' } as never)
 
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
   const drawn = async () => {
@@ -37,8 +37,8 @@ test('theme: colors.toml recolours the pane; a missing file keeps the defaults',
   }
 
   // No skins plugin loaded here: its theme reads as absent and colors.toml applies, with no error.
-  // No file: the default tile and text colours, nothing themed.
-  expect(await drawn()).toContain('.tile{fill:#f4f3f0}')
+  // No file: the default text colours, nothing themed.
+  expect(await drawn()).toContain('.s{fill:#6b6b68}')
   expect(await drawn()).not.toContain('#13141c')
 
   // Omarchy's own keys (tokyo-night); with no file the poll runs once a minute, not every 2s.
@@ -103,7 +103,7 @@ test('theme: the skins theme wins over colors.toml, redraws when it changes, nul
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   // A question flags the card: its red pill is drawn, so the red rule is in the pane.
-  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, blocked: 'which db?', agentId: 'w1' } as never)
+  await $.tool.call({ tool: 'mcp__savvy-progress__step', done: 0, total: 4, blocked: 'which db?', agentId: 'w1' } as never)
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'ship it', total: 2, done: 1 } as never)
 
   const pane = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })

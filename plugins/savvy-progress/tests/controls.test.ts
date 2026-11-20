@@ -14,6 +14,7 @@ const setup = (on: OnT, calls: Record<string, unknown>[] = []) => {
 const fill = async ($: $T) => {
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'fix tests', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: 'w1', agentId: 'w1' } as never)
+  await $.prompt.submit({ text: 'next', wait: false, origin: { kind: 'composer' } } as never) // the user moves on: the hold ends
   await $.tool.call({ tool: 'Bash', command: 'npm run dev', run_in_background: true } as never)
 }
 

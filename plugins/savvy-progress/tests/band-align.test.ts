@@ -23,13 +23,14 @@ test('desktop band: dot, bar, pill, crab and the attention chip share one centre
     return props ? [{ props }] : []
   })
   await ui.unmount()
-  // The bar's layers (the fill, the twinkle, the pill) share one origin; the crab is beside them.
+  // The title (with the bar's left end), the pill and the crab; the track between is Boxes the
+  // app lays out, centred on the row by alignItems.
   const row = svgs.find(s => s.props.alt.startsWith('Background tasks'))
-  const layer = svgs.find(s => s.props.source.includes('text-anchor="middle"') && s.props.source.includes('class="tk"'))
+  const layer = svgs.find(s => s.props.source.includes('text-anchor="middle"') && s.props.alt.startsWith('Tasks '))
   const crabImg = svgs.find(s => s.props.source.includes('class="c-other'))
   const chip = svgs.find(s => s.props.alt.includes('attention'))
   if (!row || !layer || !crabImg || !chip) throw new Error('band row, pill, crab or chip missing')
-  for (const img of [layer, crabImg]) expect(img.props.height).toBe(row.props.height)
+  expect(crabImg.props.height).toBe(row.props.height)
 
   // The skins band beside it is 23 tall; the Buttons centre on the band line, so must the images.
   const H = row.props.height
@@ -41,13 +42,10 @@ test('desktop band: dot, bar, pill, crab and the attention chip share one centre
 
   expect(num(/<circle cx="5" cy="([\d.]+)"/)).toBe(mid)
 
-  // The bar and the pill on it: both BAR_H tall, drawn in the bar's translated group.
-  const barY = num(/<g transform="translate\([\d.]+,([\d.-]+)\)">\s*<rect class="k"/)
-  const barH = num(/<rect class="k" width="[\d.]+" height="([\d.]+)"/)
-  const pillH = num(/<rect x="[\d.]+" width="[\d.]+" height="([\d.]+)" rx="[\d.]+" fill=/, layer.props.source)
-  expect(num(/<g transform="translate\([\d.]+,([\d.-]+)\)">/, layer.props.source)).toBe(barY)
-  expect(barY + barH / 2).toBe(mid)
-  expect(barY + pillH / 2).toBe(mid)
+  // The bar's left end in the title image, and the pill (the track's height), centre on the line.
+  const capTop = num(/<path d="M[\d.]+ ([\d.]+)A11.5 11.5 0 0 0/)
+  expect(capTop).toBe(0)
+  expect(layer.props.height).toBe(H)
 
   // The crab: its drawn pixels' extent, scaled and offset, centres on the line.
   const crab = /<g transform="translate\(([\d.]+),([\d.-]+)\) scale\(([\d.]+)\)"[^>]*>([\s\S]*?)<\/g><\/g>\s*<\/svg>/.exec(crabImg.props.source)

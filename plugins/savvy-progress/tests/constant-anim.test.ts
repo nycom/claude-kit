@@ -23,7 +23,7 @@ const tokens = async ($: $T) => {
   for await (const _ of stream) void _
 }
 
-const isAnimated = (src: string): boolean => /class="spin"|class="c-\w+ run"|@keyframes tw\{/.test(src)
+const isAnimated = (src: string): boolean => /class="spin"|class="c-\w+ run"|@keyframes (tw|gl)\{/.test(src)
 
 // Every drawing in drawing order, and the tree's shape with each drawing marked animated or data.
 const draw = async ($: $T, mount: () => ReturnType<$T['ui']['mount']>) => {
@@ -35,7 +35,7 @@ const draw = async ($: $T, mount: () => ReturnType<$T['ui']['mount']>) => {
   const shape = (n: Node | string): unknown => {
     if (typeof n === 'string') return 's'
     const img = imgOf(n)
-    return img ? `${n.type}:${isAnimated(img.source ?? '') ? 'A' : 'D'}:${img.width}x${img.height}` : [n.type, n.props?.position ?? '', (n.children ?? []).map(shape)]
+    return img ? (isAnimated(img.source ?? '') ? `${n.type}:A:${img.width}x${img.height}` : `${n.type}:D:${img.height}`) : [n.type, n.props?.position ?? '', (n.children ?? []).map(shape)]
   }
   return { animated: svgs.filter(isAnimated), data: svgs.filter(s => !isAnimated(s)), shape: JSON.stringify(shape(root as Node)) }
 }
@@ -64,8 +64,8 @@ test('desktop pane: a running card and a background row keep byte-identical anim
   expect(after.shape).toBe(before.shape)
   // The data did move: the step, the tokens, the card's time and the row's minutes.
   const data = after.data.join('')
-  expect(before.data.join('')).not.toContain('1/3 · red test')
-  for (const text of ['1/3 · red test', '42k', '1:01', 'shell · 1m']) expect(data).toContain(text)
+  expect(before.data.join('')).not.toContain('>red test<')
+  for (const text of ['>red test<', '1/3 · ', '≈$', '1:01', 'shell · 1m']) expect(data).toContain(text)
   expect(delays([...after.animated, ...after.data])).toEqual(delays([...before.animated, ...before.data]))
   for (const rule of REDUCED) expect(after.animated.join('')).toContain(rule)
 })
@@ -89,12 +89,12 @@ test('desktop compact pane: the crabs and platters keep their drawing while the 
   expect(after.data.join('')).toContain('42k')
 })
 
-test('desktop band: the twinkle and the crab keep byte-identical drawings while progress, steps and the clock move', async ($, on) => {
+test('desktop band: the glow and the crab keep byte-identical drawings while progress, steps and the clock move', async ($, on) => {
   const clock = setup(on)
   await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Steady band', phase: 'delegate', done: 0, total: 4 } as never)
   await $.agent.spawn({ tool_use_id: 't', prompt: '', description: 'walk steady', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
   const before = await draw($, band($))
-  // The bar's twinkle and the walking crab.
+  // The bar's head glow and the walking crab.
   expect(before.animated.length).toBe(2)
 
   await clock.advance(1_370)
@@ -105,11 +105,11 @@ test('desktop band: the twinkle and the crab keep byte-identical drawings while 
 
   expect(after.animated).toEqual(before.animated)
   expect(after.shape).toBe(before.shape)
-  expect(after.data.join('')).toContain('75%')
-  expect(before.data.join('')).not.toContain('75%')
+  expect(after.data.join('')).toContain('Tasks 3/4')
+  expect(before.data.join('')).not.toContain('Tasks 3/4')
   expect(delays([...after.animated, ...after.data])).toEqual(delays([...before.animated, ...before.data]))
   const anim = after.animated.join('')
-  expect(anim).toContain('@media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3{animation:none}}')
+  expect(anim).toContain('@media (prefers-reduced-motion: reduce){.gl{animation:none}}')
   expect(anim).toContain(REDUCED[1])
 })
 

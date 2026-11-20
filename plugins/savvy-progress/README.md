@@ -2,23 +2,23 @@
 
 A Claude Code mod: a progress bar above the prompt and a live panel of subagents. Made for the [savvy-flow](../savvy-flow) skill, and useful with any subagents.
 
-- **Progress bar**: the flow's title, phase, accepted tasks out of planned, and a button with the crew size that opens the panel. It appears once something reports progress (savvy-flow does) or a `savvy-*` worker starts.
+- **Progress bar**: the flow's title, phase, accepted tasks out of planned, and, at the row's right edge, the crab, a button with the crew size that opens the panel, and ✕. The glow at the fill's head stops once the bar is full. It appears once something reports progress (savvy-flow does) or any subagent starts. With no flow it reads "Claude · 2 agents" (no Tasks pill), then "Claude · 2 done · 1:05" once they end, until your next prompt.
 - **Auto-progress**: during a workflow run, agents whose label starts with a planned task's title (the longest matching title wins) move the bar on their own, by the label's next word: `implement` to delegate; `review`, `fix`, `validate` and `recheck` to review; `merge` and `docs` to close. The delegate skill's labels fit: "<task> implement", "<task> review c1", "<task> merge", "<repo> docs". Each "<task> merge" that ends with an answer counts that task done (the agent's turn is all the bar sees, so a merge that answered with a conflict still counts until the coordinator's `progress` `done` corrects it). The last "… docs" agent to answer, once every task has merged and no task or docs agent is still running, finishes the flow; a docs agent that failed does not. Phase never goes back and `done` never drops. A `progress` call still overwrites, and one without a title carries on the current flow even after the labels finished it, so the skill's closing `done` and `finished` calls land on it; a new title starts a new flow.
-- **Agents panel** (`/agents-info` toggles it): running, ended and planned subagents with model, effort, task progress, context, estimated cost and time. Working crabs walk, and each savvy tier animates its prop: the astronaut floats, the detective sweeps the magnifier, the engineer turns the wrench, the chef tosses the omelette, the racer runs with a fluttering flag. A worker with a role wears it instead, read from its type's name, then its task: the reviewer ticks a clipboard behind round glasses, the tester's test tube bubbles, the designer paints in a beret, the implementer types at a laptop in a beanie; the card keeps its tier's colour. Explore is always the pirate. `prefers-reduced-motion` stops them. A running agent or background task also carries a status mark that turns like a 33⅓ platter, each out of step with the others. On the desktop only the three most recent running agents animate (then background tasks, if fewer than three agents run); the rest hold their first frame until one of those ends.
+- **Agents panel** (`/agents-info` toggles it; `/agents-info open` opens it or brings it forward without toggling): running, ended and planned subagents with model, effort, task progress, context, estimated cost and time. Working crabs walk, and each savvy tier animates its prop: the astronaut floats, the detective sweeps the magnifier, the engineer turns the wrench, the chef tosses the omelette, the racer runs with a fluttering flag. A worker with a role wears it instead, read from its type's name, then its task: the reviewer ticks a clipboard behind round glasses, the tester's test tube bubbles, the designer paints in a beret, the implementer types at a laptop in a beanie; the card keeps its tier's colour. Explore is always the pirate. `prefers-reduced-motion` stops them. A running agent or background task also carries a status mark that turns like a 33⅓ platter, each out of step with the others. On the desktop only the three most recent running agents animate (then background tasks, if fewer than three agents run); the rest hold their first frame until one of those ends.
 
 ## Tools it adds
 
-- `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks.
-- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). A worker that does not report shows its context fill in grey instead.
+- `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks. Only the main session can: a call from a subagent is ignored, so a worker cannot rename, finish or reset the flow.
+- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). The card's bar shows those steps, in the tier's colour (a plain agent's in its role's colour: implement cyan, review magenta, test lime, design rose, Explore slate); a worker that does not report has no bar, only its time. Each card also shows steps and time ("3/5 · 2:10") and one dim line with context and cost ("ctx 38% · ≈$0.31", or "ctx — · —" before the first request). The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
 
-Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`), not a bill.
+Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`, list prices as of 2026-10-10), not a bill. Cache writes are priced at the 1-hour rate, which is what Claude Code writes on a subscription; a session that writes 5-minute entries is overestimated there.
 
 ## Attention flags
 
 A worker can ask for help through `step`:
 
-- `failed: true` counts one failed attempt (test gate red, fix rejected, build broken); each such call adds one. At three the card is flagged **FAILED ×N**, and N keeps counting. The streak resets when a `step` call without `failed` moves `done` on, or newly reaches `done >= total` (including by lowering `total` or setting it for the first time). A plain call that leaves `done` where it was does not reset it.
-- `blocked: "<question>"` flags the card **NEEDS INPUT** and shows the question under it. The worker's next `step` call without `blocked` clears it.
+- `failed: true` counts one failed attempt (test gate red, fix rejected, build broken); each such call adds one. At three the card is flagged **Failed ×N**, and N keeps counting. The streak resets when a `step` call without `failed` moves `done` on, or newly reaches `done >= total` (including by lowering `total` or setting it for the first time). A plain call that leaves `done` where it was does not reset it.
+- `blocked: "<question>"` flags the card **Needs input** and shows the question under it. The worker's next `step` call without `blocked` clears it.
 
 Only a running worker is flagged. When a run ends the flag goes; a failed streak of three or more stays in the card's meta as **failed ×N**.
 
@@ -28,12 +28,12 @@ A toast fires on a crossing only: the failed count reaching three, or a new ques
 
 ## Panel behaviour
 
-- The panel opens by itself when any subagent starts, once per flow; closing it is not undone until the next flow.
+- The panel opens by itself when any subagent starts, once per flow; closing it is not undone until the next flow. The `autoOpen` option set to `savvy` limits that to savvy workers and plans.
 - The panel lists Running, then Planned, then Background, and the Ended group last.
 - If drawing the panel or the band fails, a dim line says `savvy-progress could not draw this pane: <kind>: <message>` instead of leaving it blank; the band keeps the bands of other mods under it.
-- The group of runs that are no longer working is **Ended · N** (done and failed runs alike). Its header collapses it, and it collapses on its own when the last running agent ends; an expand you make stays until the next run ends. Background shells and monitors don't count as running agents here.
-- On the desktop the Ended group shows the 20 that ended last, agents and background rows alike, and a **+K more ended** line for the rest. The desktop drops a whole panel that grows too large, so when the cards would not fit, the panel draws as many as fit and one **+N more running** (or **+K more ended**) line; the terminal lists everything.
-- Text colours meet 4.5:1 on the light and dark host backgrounds: per-theme tier colours, darker meta and percent text, dark labels on the coloured pills, white on the red flag.
+- The group of runs that are no longer working is **Ended · N** (done and failed runs alike). Its header collapses it. A run that ends first stays in Running for a moment, with a still done or failed pose and "took m:ss" / "failed after m:ss", until your next prompt (typed, or from the phone over Remote Control; notifications and schedules don't count). Running agents come first, then the 6 that ended last; older finished runs go straight to Ended, so a long unattended run never pushes live work out of view. Then it moves to Ended, which collapses on its own once nothing runs; an expand you make stays until the next run ends. Background shells and monitors don't count as running agents here.
+- On the desktop the Ended group shows the 20 that ended last, agents and background rows alike, and a **+K more ended** line for the rest. The desktop drops a whole panel that grows too large, so when the cards would not fit, the panel draws as many as fit and one **+N more running**, **+N more planned** or **+K more ended** line; the terminal lists everything.
+- Text colours meet 4.5:1 on the light and dark host backgrounds: per-theme tier colours, darker meta text, dark labels on the coloured pills, white on the red flag.
 - A planned task of the `medium` tier is labelled Sonnet.
 - After a turn that ends with a `/status` block, the header shows its `STATUS` line and `next gate: <first LEFT item>` (no gate line when nothing is left); a later turn without a block keeps it.
 
@@ -79,9 +79,9 @@ If `~/.local/state/omarchy/current/theme/colors.toml` exists, the panel and the 
 | `dark_foreground` (else `muted`) | dim text |
 | `red` | the attention flag |
 | `selection` | tracks and dividers |
-| `dark_background` (else `background`) | tiles and flag text |
+| `dark_background` (else `background`) | flag text |
 
-A missing key keeps its default colour. A file with `mode = "light"` is ignored. On the desktop the text, track and tile colours apply only while the host is in dark mode; `accent` and the terminal colours apply whenever a theme is loaded. The file is checked every 2 seconds while it exists (read again only when it changes) and every 60 seconds while it is missing, so a theme installed later is picked up.
+A missing key keeps its default colour. A file with `mode = "light"` is ignored. On the desktop the text and track colours apply only while the host is in dark mode; `accent` and the terminal colours apply whenever a theme is loaded. The file is checked every 2 seconds while it exists (read again only when it changes) and every 60 seconds while it is missing, so a theme installed later is picked up.
 
 While the skins mod has a dark skin on, its theme wins over the file, and a `/skin` switch redraws the panel and the band at once: its `dim` is the dim text. A light skin behaves like a light host: the file's accent and terminal colours still apply (they are your own pick and are not tied to the mode, with no contrast check against the skin) and none of the dark-mode panel colours are drawn. With the skin off the file applies again. Without skins installed, the file alone applies.
 
@@ -92,5 +92,7 @@ While the skins mod has a dark skin on, its theme wins over the file, and a `/sk
 ```json
 { "pluginConfigs": { "savvy-progress": { "options": { "language": "ru" } } } }
 ```
+
+`autoOpen`: `any` (default) or `savvy`. With `any` the panel opens by itself, once per flow, when any subagent starts or a plan is reported. With `savvy` only a `savvy-*` worker or a plan opens it. `/agents-info` toggles it either way.
 
 Install instructions are in the [repository README](../../README.md).
