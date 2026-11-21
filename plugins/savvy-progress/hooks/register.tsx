@@ -29,7 +29,7 @@ const STEP_TOOL = 'mcp__savvy-progress__step'
 // skip it even with the tool listed; the same request in the brief is followed.
 const STEP_BRIEF = `
 
-Progress reporting: before any other work, call \`${STEP_TOOL}\` with \`total\` (your plan in 3-8 steps) and \`done: 0\`; call it again with \`done\` and a few-word \`note\` as each step finishes. It only draws a progress bar.`
+Progress reporting: before any other work, call \`${STEP_TOOL}\` with \`total\` (your plan in 3-8 steps) and \`done: 0\`; call it again with \`done\` and a few-word \`note\` as each step finishes. It only draws a progress bar. When an attempt fails, call it with failed: true, reason (one sentence) and error (the exact error line).`
 const PANE = 'savvy-agents'
 const PHASES: readonly Phase[] = ['plan', 'design', 'delegate', 'review', 'close']
 const TIERS: readonly string[] = ['fable', 'heavy', 'careful', 'medium', 'light']
@@ -1340,6 +1340,7 @@ async function togglePane($: EngineInterface): Promise<boolean> {
 }
 
 async function autoOpen($: EngineInterface, key: string): Promise<void> {
+  if (await read($, { plugin: 'clawpit', key: 'takeover' })) return
   const p = await read($, panel)
   if (p.autoOpenedFor === key) return
   await update($, panel, prev => ({ ...prev, autoOpenedFor: key }))
@@ -1387,7 +1388,7 @@ export const register: Register = (on, options) => {
       description:
         'For subagents: report progress on your own task to the agents panel. ' +
         'Right after reading the brief, call it with `total` (your plan in 3-8 steps) and `done: 0`; ' +
-        'call it again as each step finishes. Cheap and silent: it only draws a bar, unless you flag `failed` or `blocked`.',
+        'call it again as each step finishes. Cheap and silent: it only draws a bar, unless you flag `failed` or `blocked`. When an attempt fails, call it with failed: true, reason (one sentence) and error (the exact error line).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1399,6 +1400,8 @@ export const register: Register = (on, options) => {
             description:
               'Set true when an attempt at your task failed (test gate red, fix rejected, build broken). Each call with failed:true counts one failed attempt.',
           },
+          reason: { type: 'string', description: 'With failed: why this attempt failed, one sentence.' },
+          error: { type: 'string', description: 'With failed: the exact error line, copied verbatim.' },
           blocked: {
             type: 'string',
             description:
@@ -1453,7 +1456,7 @@ export const register: Register = (on, options) => {
 
   // A worker's own progress: the call runs in the worker's loop, so agentId names it.
   on('tool.call', { tool: STEP_TOOL }, async ($, e) => {
-    const input = e as unknown as { done?: number; total?: number; note?: string; failed?: boolean; blocked?: string }
+    const input = e as unknown as { done?: number; total?: number; note?: string; failed?: boolean; blocked?: string; reason?: string; error?: string }
     const agentId = e.agentId
     if (!agentId) return { result: 'ignored: only subagents report steps' }
     let matched = false
@@ -1477,6 +1480,13 @@ export const register: Register = (on, options) => {
           stepNote: oneLine(input.note) || undefined,
           failedAttempts: isProgress ? undefined : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
           blocked: oneLine(input.blocked) || undefined,
+          failNote: isProgress ? undefined : a.failNote,
+          failLine: isProgress ? undefined : a.failLine,
+        }
+        // Reason and error are one pair: a failed call that names either replaces both.
+        if (input.failed === true && (input.reason !== undefined || input.error !== undefined)) {
+          run.failNote = clip(oneLine(input.reason), 200) || undefined
+          run.failLine = clip(oneLine(input.error), 300) || undefined
         }
         // Toast on crossings only: a new question, or the third failed attempt.
         if (run.blocked && run.blocked !== a.blocked) alerts.push(`${s.agent} ${run.description}: ${s.toastInput} — ${clip(run.blocked, 120)}`)
@@ -2014,6 +2024,8 @@ export const register: Register = (on, options) => {
   }).catch(paneFailed)
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    // clawpit draws only on the desktop, so other surfaces keep savvy's band.
+    if (e.surface === 'desktop' && (await read($, { plugin: 'clawpit', key: 'takeover' }))) return next(e)
     await paletteOf($)
     const f = await read($, flow)
     const list = await read($, agents)

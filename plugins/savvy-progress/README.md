@@ -9,7 +9,7 @@ A Claude Code mod: a progress bar above the prompt and a live panel of subagents
 ## Tools it adds
 
 - `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks. Only the main session can: a call from a subagent is ignored, so a worker cannot rename, finish or reset the flow.
-- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). The card's bar shows those steps, in the tier's colour (a plain agent's in its role's colour: implement cyan, review magenta, test lime, design rose, Explore slate); a worker that does not report has no bar, only its time. Each card also shows steps and time ("3/5 · 2:10") and one dim line with context and cost ("ctx 38% · ≈$0.31", or "ctx — · —" before the first request). The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
+- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`), and, with `failed`, why (`reason`, one sentence, clipped to 200 characters) and the exact error line (`error`, clipped to 300). The card's bar shows those steps, in the tier's colour (a plain agent's in its role's colour: implement cyan, review magenta, test lime, design rose, Explore slate); a worker that does not report has no bar, only its time. Each card also shows steps and time ("3/5 · 2:10") and one dim line with context and cost ("ctx 38% · ≈$0.31", or "ctx — · —" before the first request). The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
 
 Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`, list prices as of 2026-10-10), not a bill. Cache writes are priced at the 1-hour rate, which is what Claude Code writes on a subscription; a session that writes 5-minute entries is overestimated there.
 
@@ -18,6 +18,7 @@ Cost is a rough estimate from token counts and a built-in per-model price table 
 A worker can ask for help through `step`:
 
 - `failed: true` counts one failed attempt (test gate red, fix rejected, build broken); each such call adds one. At three the card is flagged **Failed ×N**, and N keeps counting. The streak resets when a `step` call without `failed` moves `done` on, or newly reaches `done >= total` (including by lowering `total` or setting it for the first time). A plain call that leaves `done` where it was does not reset it.
+- `reason` and `error` go with `failed: true`: why this attempt failed, in one sentence (clipped to 200 characters), and the exact error line (clipped to 300). They are one pair: a failed call that gives either replaces both, and one that gives neither keeps the last pair. A `step` call that resets the streak clears them.
 - `blocked: "<question>"` flags the card **Needs input** and shows the question under it. The worker's next `step` call without `blocked` clears it.
 
 Only a running worker is flagged. When a run ends the flag goes; a failed streak of three or more stays in the card's meta as **failed ×N**.
@@ -26,9 +27,13 @@ A flagged card gets a static red label in the full panel, the compact panel (one
 
 A toast fires on a crossing only: the failed count reaching three, or a new question (a different one from the question already showing). A single `step` call that does both toasts twice. A fourth failure or the same question again stays quiet; a question asked again after it cleared toasts. The question is cut to 120 characters in the toast.
 
+## With clawpit
+
+While the clawpit mod is loaded and has taken over (its `takeover` flag is on), savvy-progress stands down in two places: the band above the prompt draws nothing on the desktop, where clawpit draws its own, and the panel no longer opens by itself. Other surfaces, such as the terminal, keep the band. The auto-open stand-down is session-wide, not per surface (known limit): a terminal attached to the same session gets no auto-open either. The tools, the atoms, the toasts and `/agents-info` keep working.
+
 ## Panel behaviour
 
-- The panel opens by itself when any subagent starts, once per flow; closing it is not undone until the next flow. The `autoOpen` option set to `savvy` limits that to savvy workers and plans.
+- The panel opens by itself when any subagent starts, once per flow (not while clawpit has taken over, see above); closing it is not undone until the next flow. The `autoOpen` option set to `savvy` limits that to savvy workers and plans.
 - The panel lists Running, then Planned, then Background, and the Ended group last.
 - If drawing the panel or the band fails, a dim line says `savvy-progress could not draw this pane: <kind>: <message>` instead of leaving it blank; the band keeps the bands of other mods under it.
 - The group of runs that are no longer working is **Ended · N** (done and failed runs alike). Its header collapses it. A run that ends first stays in Running for a moment, with a still done or failed pose and "took m:ss" / "failed after m:ss", until your next prompt (typed, or from the phone over Remote Control; notifications and schedules don't count). Running agents come first, then the 6 that ended last; older finished runs go straight to Ended, so a long unattended run never pushes live work out of view. Then it moves to Ended, which collapses on its own once nothing runs; an expand you make stays until the next run ends. Background shells and monitors don't count as running agents here.
@@ -93,6 +98,6 @@ While the skins mod has a dark skin on, its theme wins over the file, and a `/sk
 { "pluginConfigs": { "savvy-progress": { "options": { "language": "ru" } } } }
 ```
 
-`autoOpen`: `any` (default) or `savvy`. With `any` the panel opens by itself, once per flow, when any subagent starts or a plan is reported. With `savvy` only a `savvy-*` worker or a plan opens it. `/agents-info` toggles it either way.
+`autoOpen`: `any` (default) or `savvy`. With `any` the panel opens by itself, once per flow, when any subagent starts or a plan is reported. With `savvy` only a `savvy-*` worker or a plan opens it. While clawpit has taken over, neither opens it. `/agents-info` toggles it either way.
 
 Install instructions are in the [repository README](../../README.md).
