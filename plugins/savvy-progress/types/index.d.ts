@@ -40,6 +40,10 @@ export type AgentRun = {
   stepNote?: string
   /** `step` calls with `failed: true`; three or more flag the card. */
   failedAttempts?: number
+  /** Why the last failed attempt failed, one sentence, from the worker. */
+  failNote?: string
+  /** The error line, verbatim, from the worker. */
+  failLine?: string
   /** The question the worker is waiting on; its next `step` call without it clears it. */
   blocked?: string
   /** An ended run held in Running, with its done or failed pose, until the user's next prompt. */
@@ -77,6 +81,7 @@ export type PanelTheme = { mode: 'dark' | 'light'; accent: string; foreground: s
 declare module 'claude-code' {
   interface PluginState {
     skins: { theme: PanelTheme | null }
+    clawpit: { takeover: boolean }
     'savvy-progress': {
       flow: Flow | null
       agents: AgentRun[]
