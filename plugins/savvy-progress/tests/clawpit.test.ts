@@ -18,6 +18,7 @@ const takeover = ($: Parameters<Parameters<typeof test>[1]>[0], value: 'on' | 'o
 let agentsSeen: { failNote?: string; failLine?: string; failedAttempts?: number }[] = []
 
 const setup = (on: Parameters<Parameters<typeof test>[1]>[1], opens: string[] = [], registered: { description?: string }[] = [], prompts: string[] = []) => {
+  agentsSeen = []
   mock.clock(on)
   mock.env(on, { HOME: '/home/k' })
   on('fs.stat', () => { throw new Error('ENOENT') })
@@ -49,8 +50,8 @@ const run = async ($: Parameters<Parameters<typeof test>[1]>[0]) => {
   await ui.unmount()
   return agentsSeen[0]
 }
-const band = async ($: Parameters<Parameters<typeof test>[1]>[0]) => {
-  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+const band = async ($: Parameters<Parameters<typeof test>[1]>[0], surface: 'desktop' | 'terminal' = 'desktop') => {
+  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface, component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
   const text = (await ui.findAll({})).map(n => `${n.type}:${n.text ?? ''}`).join('|')
   await ui.unmount()
   return text
@@ -71,6 +72,15 @@ test('step: a later failed attempt without a reason keeps the last one', { plugi
   await step($, { done: 2, failed: true })
   const r = await run($)
   expect([r.failNote, r.failLine, r.failedAttempts]).toEqual(['no db', 'ECONNREFUSED', 2])
+})
+
+test('step: a failed attempt with only a reason drops the old error line', { plugins: [CLAWPIT] }, async ($, on) => {
+  setup(on)
+  await spawn($)
+  await step($, { done: 2, failed: true, reason: 'no db', error: 'ECONNREFUSED 5432' })
+  await step($, { done: 2, failed: true, reason: 'type check failed' })
+  const r = await run($)
+  expect([r.failNote, r.failLine, r.failedAttempts]).toEqual(['type check failed', undefined, 2])
 })
 
 test('step: progress clears the reason and the error line', { plugins: [CLAWPIT] }, async ($, on) => {
@@ -139,4 +149,22 @@ test('takeover: autoOpen stands down on both of its paths, a new plan and a suba
   await takeover($, 'off')
   await spawn($)
   expect(opens).toEqual(['savvy-agents'])
+})
+
+test('takeover: the terminal band still draws, only the desktop band stands down', { plugins: [CLAWPIT] }, async ($, on) => {
+  setup(on)
+  await takeover($, 'on')
+  await spawn($)
+  expect(await band($, 'terminal')).toMatch(/Claude · 1 agent/)
+  expect(await band($)).not.toMatch(/agent/)
+})
+
+test('without clawpit loaded: the band draws, the pane auto-opens and the reason is kept', async ($, on) => {
+  const opens: string[] = []
+  setup(on, opens)
+  await spawn($)
+  await step($, { done: 1, failed: true, reason: 'no db' })
+  expect(await band($)).toMatch(/1 agent/)
+  expect(opens).toEqual(['savvy-agents'])
+  expect((await run($)).failNote).toBe('no db')
 })

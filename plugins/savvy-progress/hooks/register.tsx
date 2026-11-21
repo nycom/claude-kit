@@ -1480,8 +1480,13 @@ export const register: Register = (on, options) => {
           stepNote: oneLine(input.note) || undefined,
           failedAttempts: isProgress ? undefined : (a.failedAttempts ?? 0) + (input.failed === true ? 1 : 0) || undefined,
           blocked: oneLine(input.blocked) || undefined,
-          failNote: input.failed === true ? clip(oneLine(input.reason), 200) || a.failNote : isProgress ? undefined : a.failNote,
-          failLine: input.failed === true ? clip(oneLine(input.error), 300) || a.failLine : isProgress ? undefined : a.failLine,
+          failNote: isProgress ? undefined : a.failNote,
+          failLine: isProgress ? undefined : a.failLine,
+        }
+        // Reason and error are one pair: a failed call that names either replaces both.
+        if (input.failed === true && (input.reason !== undefined || input.error !== undefined)) {
+          run.failNote = clip(oneLine(input.reason), 200) || undefined
+          run.failLine = clip(oneLine(input.error), 300) || undefined
         }
         // Toast on crossings only: a new question, or the third failed attempt.
         if (run.blocked && run.blocked !== a.blocked) alerts.push(`${s.agent} ${run.description}: ${s.toastInput} — ${clip(run.blocked, 120)}`)
@@ -2019,7 +2024,8 @@ export const register: Register = (on, options) => {
   }).catch(paneFailed)
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (await read($, { plugin: 'clawpit', key: 'takeover' })) return next(e)
+    // clawpit draws only on the desktop, so other surfaces keep savvy's band.
+    if (e.surface === 'desktop' && (await read($, { plugin: 'clawpit', key: 'takeover' }))) return next(e)
     await paletteOf($)
     const f = await read($, flow)
     const list = await read($, agents)
