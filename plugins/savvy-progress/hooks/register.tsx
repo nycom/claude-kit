@@ -269,6 +269,9 @@ const STRINGS = {
 
 // Module scope is fine here: session.start sets it again on every (re)load.
 let lang: Lang = 'en'
+// The option showCost: false leaves the estimate out of what savvy draws (the cost is still tracked).
+let showCost = true
+const costPart = (c: number): string => (showCost ? ` · ≈${fmtCost(c)}` : '')
 const tr = () => STRINGS[lang]
 
 const isRussian = (v: unknown): boolean => typeof v === 'string' && /^(ru|russian|рус)/i.test(v.trim())
@@ -977,7 +980,7 @@ const summaryText = (list: AgentRun[], t: ReturnType<typeof totals>): string => 
   const held = list.filter(a => a.status !== 'running' && a.heldDone).length
   // During the finish hold nothing runs: say what is done instead of "0 running".
   const head = running || !held ? `${running} ${tr().busy}` : `${held} ${tr().doneWord}`
-  return t.tokens > 0 ? `${head} · ≈${fmtCost(t.cost)} · ${fmtTime(t.time)}` : `${head} · — · —`
+  return t.tokens > 0 ? `${head}${costPart(t.cost)} · ${fmtTime(t.time)}` : `${head} · —${showCost ? ' · —' : ''}`
 }
 
 const summarySvg = (W: number, text: string): string =>
@@ -1030,7 +1033,7 @@ const cardStats = (a: AgentRun, at: number): { right: string; dim: string } => {
   const s = tr()
   const when = a.status === 'done' ? `${s.took} ${time}` : a.status === 'failed' ? `${s.failedAfter} ${time}` : time
   const right = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal} · ${when}` : when
-  const dim = a.tokens > 0 ? `ctx ${ctxOf(a)}% · ≈${fmtCost(a.costUsd)}` : 'ctx — · —'
+  const dim = a.tokens > 0 ? `ctx ${ctxOf(a)}%${costPart(a.costUsd)}` : `ctx —${showCost ? ' · —' : ''}`
   return { right, dim }
 }
 
@@ -1148,7 +1151,7 @@ const compactSvg = (W: number, more: number, t: ReturnType<typeof totals>): stri
     W,
     32,
     `${more ? `<text class="s" x="2" y="21" font-family="${FONT}" font-size="12">+${more}</text>` : ''}
-<text class="s" x="${W}" y="21" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">≈${fmtCost(t.cost)} · ${fmtTokens(t.tokens)} · ${fmtTime(t.time)}</text>`,
+<text class="s" x="${W}" y="21" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">${showCost ? `≈${fmtCost(t.cost)} · ` : ''}${fmtTokens(t.tokens)} · ${fmtTime(t.time)}</text>`,
   )
 
 // --- background work: shells and monitors that run, crons and wakeups that wait.
@@ -1380,6 +1383,7 @@ async function autoOpen($: EngineInterface, key: string): Promise<void> {
 }
 
 export const register: Register = (on, options) => {
+  showCost = options.showCost !== false
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     lang = await detectLang($, options.language)
@@ -1810,7 +1814,7 @@ export const register: Register = (on, options) => {
     const hasEnded = finished.length + bgEnded.length > 0
     const stopButton = (x: BackgroundTask) => <Button key={`stop-${x.id}`} label="■" plain dimColor hover={{ color: pal?.red ?? RED }} onPress={() => stopTask($, x)} />
     const flagged = list.filter(needsAttention)
-    const summary = `≈${fmtCost(t.cost)}, ${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
+    const summary = `${showCost ? `≈${fmtCost(t.cost)}, ` : ''}${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
 
     if (e.surface === 'desktop' && 'Svg' in ui) {
       const { Svg, Client } = ui
