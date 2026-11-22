@@ -16,6 +16,8 @@ export type Flow = {
   tasks: PlannedTask[]
   /** Normalised titles of tasks known done; never shrinks, cleared when a new flow starts. */
   doneTitles?: string[]
+  /** The watched file the flow was read from; absent for a flow reported through `progress`. */
+  source?: string
 }
 
 export type AgentStatus = 'running' | 'done' | 'failed'
