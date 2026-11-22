@@ -18,6 +18,7 @@ const host = (on: OnT, files: Record<string, string>, cwd: string | null = '/w')
   setup(on)
   const reads: string[] = []
   const probes: string[] = []
+  const cwds: string[] = []
   on('fs.read', (_$, e) => {
     reads.push(e.path)
     const text = files[e.path]
@@ -26,10 +27,11 @@ const host = (on: OnT, files: Record<string, string>, cwd: string | null = '/w')
   })
   on('fs.exists', (_$, e) => (probes.push(e.path), { value: e.path in files }))
   on('session.cwd', () => {
+    cwds.push('cwd')
     if (cwd === null) throw new Error('no session directory')
     return { value: cwd }
   })
-  const h = { files, reads, probes, isFailing: false }
+  const h = { files, reads, probes, cwds, isFailing: false }
   on('tool.call', { tool: ['Edit', 'Write'] }, () => (h.isFailing ? { result: 'no match', isError: true } : { result: 'written' }) as never)
   on('ui.toast', (_$, e) => (e.text.startsWith('atom:') && (seen = (JSON.parse(e.text.slice(5)) as { value?: unknown }).value ?? null), { value: undefined }))
   return h
@@ -116,6 +118,16 @@ test('unchecking a box keeps done', { options: { watch: ['docs/plan.md'] }, plug
   await edit($, '/w/docs/plan.md')
   expect(await band($)).toBe('Release prep: Tasks 1/3, 33%')
   expect((await atomOf($, 'flow'))?.doneTitles).toEqual(['schema'])
+  // A title checked earlier stays known when another box is checked.
+  h.files['/w/docs/plan.md'] = PLAN_MD.replace('[x] schema', '[ ] schema').replace('[ ] api', '[x] api')
+  await edit($, '/w/docs/plan.md')
+  expect((await atomOf($, 'flow'))?.doneTitles).toEqual(['schema', 'api'])
+})
+
+test('a file with CRLF line endings builds the same flow', { options: { watch: ['docs/plan.md'] }, plugins: [READER] }, async ($, on) => {
+  host(on, { '/w/docs/plan.md': PLAN_MD.replaceAll('\n', '\r\n') })
+  await edit($, '/w/docs/plan.md')
+  expect(await atomOf($, 'flow')).toMatchObject({ title: 'Release prep', total: 3, done: 1 })
 })
 
 test('nested boxes: only the shallowest indent counts', { options: { watch: ['docs/plan.md'] }, plugins: [READER] }, async ($, on) => {
@@ -210,6 +222,7 @@ test('an empty watch list registers nothing: no read, no probe, no flow', { plug
   await start($, on)
   expect(await edit($, '/w/docs/plan.md')).toEqual({ result: 'written' })
   expect(h.probes).toEqual([])
+  expect(h.cwds).toEqual([])
   expect(h.reads.filter(p => p.startsWith('/w/'))).toEqual([])
   expect(await atomOf($, 'flow')).toBe(null)
 })

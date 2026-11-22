@@ -718,7 +718,7 @@ const fileTitle = (text: string, path: string): string => clip(oneLine(/^# (.+)$
 const BOX = /^(\s*)[-*+] \[( |x|X)\] (.+)$/
 // Boxes at the shallowest indent are the tasks; deeper ones are their detail.
 const parseChecklist = (text: string, path: string): Parsed | null => {
-  const boxes = text.split('\n').map(l => BOX.exec(l)).filter((m): m is RegExpExecArray => m !== null)
+  const boxes = text.split(/\r?\n/).map(l => BOX.exec(l)).filter((m): m is RegExpExecArray => m !== null)
   const indent = Math.min(...boxes.map(m => m[1]?.length ?? 0))
   const tasks = boxes
     .filter(m => m[1]?.length === indent)
