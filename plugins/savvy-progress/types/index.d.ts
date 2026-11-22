@@ -24,6 +24,12 @@ export type AgentRun = {
   type: string
   description: string
   model: string
+  /** The family word read from `model` (`opus`, `sonnet`, ...), '' when none is found. */
+  modelFamily?: string
+  /** The version read from `model` (`5.5`, `5`), '' for an alias or an unknown id. */
+  modelVersion?: string
+  /** `model` ends with the `[1m]` long-window suffix. */
+  modelLong?: true
   effort?: string
   status: AgentStatus
   startedAt: number

@@ -566,11 +566,43 @@ const tierOf = (type: string): string => {
   return Object.hasOwn(TIER_COLOR, t) && bare.startsWith('savvy-') ? t : 'other'
 }
 
+// A model id read for its family, version and long-window suffix, in either order the ids
+// come in: `claude-opus-4-1-20250805` or the older `claude-3-5-sonnet-20241022`, with `-` or
+// `.` between major and minor. A number of more than two digits is a date, never a version.
+export const modelOf = (raw: string): Required<Pick<AgentRun, 'modelFamily' | 'modelVersion'>> & Pick<AgentRun, 'modelLong'> => {
+  const id = (raw ?? '').trim().toLowerCase()
+  const core = id.replace(/\[1m\]/g, '')
+  const family = /fable|mythos|opus|sonnet|haiku/.exec(core)?.[0] ?? ''
+  const m = family
+    ? (new RegExp(`${family}-(\\d{1,2})(?!\\d)(?:[-.](\\d{1,2})(?!\\d))?`).exec(core) ??
+      new RegExp(`(?<![\\d.])(\\d{1,2})(?:[-.](\\d{1,2}))?-${family}`).exec(core))
+    : null
+  const [, major = '', minor] = m ?? []
+  return { modelFamily: family, modelVersion: minor ? `${major}.${minor}` : major, modelLong: core !== id || undefined }
+}
+
 const modelName = (id: string): string => {
+  const { modelFamily: family, modelVersion: version } = modelOf(id)
+  const core = id.trim().toLowerCase().replace(/\[1m\]/g, '')
+  // An exact family word (an alias) or a family then a date reads as the family alone.
+  const isFamilyOnly = !!family && (core === family || new RegExp(`^(?:claude-)?${family}-\\d{8}$`).test(core))
+  if (version || isFamilyOnly) return `${family.charAt(0).toUpperCase()}${family.slice(1)}${version ? ' ' + version : ''}`
+  // Any other id reads as it always has.
   const m = /(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d{1,2})(?!\d))?/i.exec(id)
-  const [, family = '', major = '', minor] = m ?? []
-  if (!family) return id.replace(/^claude-/, '').replace(/\[.*\]$/, '') || '—'
-  return `${family.charAt(0).toUpperCase()}${family.slice(1).toLowerCase()} ${major}${minor ? '.' + minor : ''}`
+  const [, f = '', major = '', minor] = m ?? []
+  if (!f) return id.replace(/^claude-/, '').replace(/\[.*\]$/, '') || '—'
+  return `${f.charAt(0).toUpperCase()}${f.slice(1).toLowerCase()} ${major}${minor ? '.' + minor : ''}`
+}
+
+// `model` is the id as the engine gave it; the fields beside it are read from it each time it is written.
+// The API reports an id without its `[1m]`, so a prior reading that was long, of the same family
+// and the same version (or none, as for an alias), keeps the run long.
+type ModelReading = Pick<AgentRun, 'modelFamily' | 'modelVersion' | 'modelLong'>
+const withModel = (run: AgentRun, raw: string, ...priors: (ModelReading | undefined)[]): AgentRun => {
+  const got = modelOf(raw)
+  const isSame = (p: ModelReading) => p.modelFamily === got.modelFamily && (p.modelVersion === '' || p.modelVersion === got.modelVersion)
+  const isLong = got.modelLong || priors.some(p => p?.modelLong && isSame(p))
+  return { ...run, model: (raw ?? '').trim(), ...got, modelLong: isLong || undefined }
 }
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
@@ -1601,21 +1633,30 @@ export const register: Register = (on, options) => {
     const at = await $.clock.now()
     const spawned = await update($, agents, list => {
       const round = 1 + list.filter(a => norm(a.description) === norm(e.description) && e.description).length
-      const run: AgentRun = {
-        id: started.agentId ?? e.tool_use_id,
-        agentId: started.agentId,
-        type: e.subagentType,
-        description: oneLine(e.description),
-        model: started.model,
-        status: 'running',
-        startedAt: at,
-        contextTokens: 0,
-        contextMax: windowOf(started.model),
-        tokens: 0,
-        costUsd: 0,
-        steps: 0,
-        round,
-      }
+      // A resumed run keeps its model and effort until a request reports new ones.
+      const earlier = e.resume ? list.find(a => a.agentId === e.resume?.agentId) : undefined
+      const given = (started.model || '').trim()
+      const model = earlier?.model || (!given || given === 'inherit' ? e.parentModel : given)
+      const run: AgentRun = withModel(
+        {
+          id: started.agentId ?? e.tool_use_id,
+          agentId: started.agentId,
+          type: e.subagentType,
+          description: oneLine(e.description),
+          model,
+          effort: earlier?.effort,
+          status: 'running',
+          startedAt: at,
+          contextTokens: 0,
+          contextMax: windowOf(model),
+          tokens: 0,
+          costUsd: 0,
+          steps: 0,
+          round,
+        },
+        model,
+        earlier,
+      )
       return [...list.filter(a => a.id !== run.id), run].slice(-200)
     })
     await update($, flow, f => autoFlow(f, spawned, spawned.find(a => a.id === (started.agentId ?? e.tool_use_id))))
@@ -1643,9 +1684,8 @@ export const register: Register = (on, options) => {
       list.map((a): AgentRun =>
         a.agentId !== agentId
           ? a
-          : {
+          : withModel({
               ...a,
-              model,
               effort: typeof e.effort === 'string' ? e.effort : a.effort,
               status: 'running' as const,
               endedAt: undefined,
@@ -1663,7 +1703,7 @@ export const register: Register = (on, options) => {
                 (usage.cache_creation_input_tokens || 0),
               costUsd: a.costUsd + costOf(model, usage, true),
               steps: a.steps + 1,
-            },
+            }, model, modelOf(e.model), a),
       ),
     )
     await retick($)
@@ -1682,7 +1722,7 @@ export const register: Register = (on, options) => {
           wasRunning = a.status === 'running'
           // A run whose steps went unseen still gets the turn's own sum.
           const fallback = a.steps === 0 && e.usage
-          return {
+          const ended: AgentRun = {
             ...a,
             status: e.reason === 'answer' ? ('done' as const) : ('failed' as const),
             endedAt: at,
@@ -1702,6 +1742,7 @@ export const register: Register = (on, options) => {
                 }
               : {}),
           }
+          return fallback ? withModel(ended, ended.model, a) : ended
         }),
       )
       if (wasRunning) await update($, flow, f => autoFlow(f, after, after.find(a => a.agentId === agentId)))
