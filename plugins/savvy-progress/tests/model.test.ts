@@ -7,10 +7,10 @@ import type { AgentRun } from '../types'
 const USAGE = { input_tokens: 1_000, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
 // The host answers each model request with the model the request ran on, as the API reports
-// it: without the long-window suffix.
-const answers = (on: OnT) =>
+// it: without the long-window suffix. `reported` overrides the next answers' model, in order.
+const answers = (on: OnT, ...reported: string[]) =>
   on('turn.step', async function* (_$, e) {
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], usage: { model: e.model.replace('[1m]', ''), ...USAGE } } as never
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], usage: { model: reported.shift() ?? e.model.replace('[1m]', ''), ...USAGE } } as never
   })
 // drawing.ts's host, with spawns answered by these models in order, as a hook answering the
 // spawn would; a resume continues under its own id, and once the list runs out the parent's model.
@@ -68,8 +68,10 @@ test('modelOf: family, version and the long-window flag from any id shape', () =
     ['claude-sonnet-4.5', { modelFamily: 'sonnet', modelVersion: '4.5' }],
     ['anthropic/claude-sonnet-4.5', { modelFamily: 'sonnet', modelVersion: '4.5' }],
     ['claude-opus-4.1', { modelFamily: 'opus', modelVersion: '4.1' }],
+    ['claude-3.5.1-sonnet', { modelFamily: 'sonnet', modelVersion: '' }],
     ['gpt-5', { modelFamily: '', modelVersion: '' }],
     ['', { modelFamily: '', modelVersion: '' }],
+    [undefined as never, { modelFamily: '', modelVersion: '' }],
   ]
   for (const [id, want] of table) expect([id, modelOf(id)]).toEqual([id, want])
 })
@@ -136,6 +138,48 @@ test('model: a request reporting a padded id stores it trimmed', async ($, on) =
   expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-opus-5-5', modelFamily: 'opus', modelVersion: '5.5' })
 })
 
+test('model: a spawn answered with no model and no parent model stores an empty id', async ($, on) => {
+  setup(on, '')
+  await spawnWith($, { parentModel: undefined })
+  expect(await runOf($, 'm1')).toMatchObject({ model: '', modelFamily: '', modelVersion: '' })
+})
+
+test('model: the long flag survives a request whose own id is plain, while the stored run was long', async ($, on) => {
+  setup(on, 'claude-opus-5-5[1m]')
+  answers(on)
+  await spawnWith($)
+  await request($, 'm1', 'claude-opus-5-5')
+  expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-opus-5-5', modelLong: true })
+})
+
+test('model: a request on a long id that reports another family clears the flag', async ($, on) => {
+  setup(on, 'claude-opus-5-5[1m]')
+  answers(on, 'claude-sonnet-5')
+  await spawnWith($)
+  await request($, 'm1', 'claude-opus-5-5[1m]')
+  const run = await runOf($, 'm1')
+  expect(run).toMatchObject({ model: 'claude-sonnet-5', modelFamily: 'sonnet' })
+  expect(run?.modelLong).toBeUndefined()
+})
+
+test('model: a resume keeps the long flag of a run whose stored id is plain', async ($, on) => {
+  setup(on, 'claude-opus-5-5[1m]', 'claude-opus-5-5[1m]')
+  answers(on)
+  await spawnWith($)
+  await request($, 'm1', 'claude-opus-5-5[1m]')
+  await end($, 'm1')
+  expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-opus-5-5', modelLong: true })
+  await spawnWith($, { resume: { agentId: 'm1' } })
+  expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-opus-5-5', modelLong: true, status: 'running' })
+})
+
+test('model: a long alias stays long when the turn reports the full id', async ($, on) => {
+  setup(on, 'opus[1m]')
+  await spawnWith($)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: 'm1', agentId: 'm1', usage: { model: 'claude-opus-5-5', ...USAGE } } as never)
+  expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-opus-5-5', modelFamily: 'opus', modelVersion: '5.5', modelLong: true })
+})
+
 test('model: a numeric effort leaves the last level', async ($, on) => {
   setup(on)
   answers(on)
@@ -167,15 +211,26 @@ test('model: a long-window run with no requests stays long when the turn reports
 
 const cardText = async ($: $T) => (await draw($)).map(n => imgOf<{ source?: string }>(n as never)?.source ?? '').join('\n')
 
-test('card: a family with no version reads as the family alone, for an alias and a family-then-date id', async ($, on) => {
-  setup(on, 'haiku', 'claude-sonnet-20250101')
-  await spawnWith($)
-  expect(await cardText($)).toContain('> · Haiku<')
-  await end($, 'm1')
-  await spawnWith($, { description: 'dated id' })
-  const src = await cardText($)
-  expect(src).toContain('> · Sonnet<')
-  expect(src).not.toContain('20250101')
+// The card's model text for each id: an exact family word or a family then a date reads as the
+// family; any other id with a family word but no readable version reads as it did before.
+test('card: family-only text for an exact alias or a family then a date, the earlier text otherwise', async ($, on) => {
+  const table: [string, string][] = [
+    ['haiku', 'Haiku'],
+    ['HAIKU', 'Haiku'],
+    ['opus[1m]', 'Opus'],
+    ['claude-sonnet-20250101', 'Sonnet'],
+    ['my-sonnet-proxy', 'my-sonnet-proxy'],
+    ['sonnet-latest', 'sonnet-latest'],
+    ['opusplan', 'opusplan'],
+    ['claude-opus-123', 'Opus 123'],
+  ]
+  setup(on, ...table.map(([id]) => id))
+  for (const [i, [id, want]] of table.entries()) {
+    await spawnWith($, { description: `card ${i}` })
+    const card = (await cardText($)).split('<svg').find(svg => svg.includes(`>card ${i}<`)) ?? ''
+    expect([id, card.includes(`> · ${want}<`)]).toEqual([id, true])
+    await end($, `m${i + 1}`)
+  }
 })
 
 test('card: an id in the older order names its version, not its date', async ($, on) => {

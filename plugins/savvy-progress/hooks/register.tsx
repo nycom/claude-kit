@@ -583,17 +583,26 @@ export const modelOf = (raw: string): Required<Pick<AgentRun, 'modelFamily' | 'm
 
 const modelName = (id: string): string => {
   const { modelFamily: family, modelVersion: version } = modelOf(id)
-  if (!family) return id.replace(/^claude-/, '').replace(/\[.*\]$/, '') || '—'
-  return `${family.charAt(0).toUpperCase()}${family.slice(1)}${version ? ' ' + version : ''}`
+  const core = id.trim().toLowerCase().replace(/\[1m\]/g, '')
+  // An exact family word (an alias) or a family then a date reads as the family alone.
+  const isFamilyOnly = !!family && (core === family || new RegExp(`^(?:claude-)?${family}-\\d{8}$`).test(core))
+  if (version || isFamilyOnly) return `${family.charAt(0).toUpperCase()}${family.slice(1)}${version ? ' ' + version : ''}`
+  // Any other id reads as it always has.
+  const m = /(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d{1,2})(?!\d))?/i.exec(id)
+  const [, f = '', major = '', minor] = m ?? []
+  if (!f) return id.replace(/^claude-/, '').replace(/\[.*\]$/, '') || '—'
+  return `${f.charAt(0).toUpperCase()}${f.slice(1).toLowerCase()} ${major}${minor ? '.' + minor : ''}`
 }
 
 // `model` is the id as the engine gave it; the fields beside it are read from it each time it is written.
-// The API reports an id without its `[1m]`, so a `prior` reading that was long, of the same family
-// and version, keeps the run long.
-const withModel = (run: AgentRun, raw: string, prior?: Pick<AgentRun, 'modelFamily' | 'modelVersion' | 'modelLong'>): AgentRun => {
+// The API reports an id without its `[1m]`, so a prior reading that was long, of the same family
+// and the same version (or none, as for an alias), keeps the run long.
+type ModelReading = Pick<AgentRun, 'modelFamily' | 'modelVersion' | 'modelLong'>
+const withModel = (run: AgentRun, raw: string, ...priors: (ModelReading | undefined)[]): AgentRun => {
   const got = modelOf(raw)
-  const isSame = prior?.modelFamily === got.modelFamily && prior?.modelVersion === got.modelVersion
-  return { ...run, model: (raw ?? '').trim(), ...got, modelLong: got.modelLong || (prior?.modelLong && isSame) || undefined }
+  const isSame = (p: ModelReading) => p.modelFamily === got.modelFamily && (p.modelVersion === '' || p.modelVersion === got.modelVersion)
+  const isLong = got.modelLong || priors.some(p => p?.modelLong && isSame(p))
+  return { ...run, model: (raw ?? '').trim(), ...got, modelLong: isLong || undefined }
 }
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
@@ -1646,6 +1655,7 @@ export const register: Register = (on, options) => {
           round,
         },
         model,
+        earlier,
       )
       return [...list.filter(a => a.id !== run.id), run].slice(-200)
     })
@@ -1693,7 +1703,7 @@ export const register: Register = (on, options) => {
                 (usage.cache_creation_input_tokens || 0),
               costUsd: a.costUsd + costOf(model, usage, true),
               steps: a.steps + 1,
-            }, model, modelOf(e.model)),
+            }, model, modelOf(e.model), a),
       ),
     )
     await retick($)
