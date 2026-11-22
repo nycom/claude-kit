@@ -14,6 +14,8 @@ export type Flow = {
   phase: Phase
   isFinished: boolean
   tasks: PlannedTask[]
+  /** Normalised titles of tasks known done; never shrinks, cleared when a new flow starts. */
+  doneTitles?: string[]
 }
 
 export type AgentStatus = 'running' | 'done' | 'failed'

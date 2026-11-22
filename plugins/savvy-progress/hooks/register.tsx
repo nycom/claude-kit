@@ -677,17 +677,19 @@ const autoFlow = (f: Flow | null, list: AgentRun[], run: AgentRun | undefined): 
     const phase = stages[stageOf(titles, run.description)?.word ?? '']?.phase
     return phase && PHASES.indexOf(phase) > PHASES.indexOf(f.phase) ? { ...f, phase } : f
   }
-  const merged = new Set(list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s && stages[s.word]?.isDone).map(s => s?.task))
+  // A title once known done stays done, even after its agent leaves the list.
+  const merged = new Set([...(f.doneTitles ?? []), ...list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s && stages[s.word]?.isDone).map(s => s?.task)])
+  const doneTitles = [...merged] as string[]
   const done = Math.max(f.done, Math.min(f.total, merged.size))
   const isFinished =
     done > 0 && done === f.total && isFinishing(run) && run.status === 'done' && !list.some(a => a.status === 'running' && (isFinishing(a) || titleOf(titles, a.description) !== undefined))
-  return done === f.done && !isFinished ? f : { ...f, done, ...(isFinished ? { isFinished, phase: 'close' as const } : {}) }
+  return done === f.done && doneTitles.length === (f.doneTitles?.length ?? 0) && !isFinished ? f : { ...f, done, ...(doneTitles.length ? { doneTitles } : {}), ...(isFinished ? { isFinished, phase: 'close' as const } : {}) }
 }
 
 const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
   if (!f || f.isFinished) return []
   const tasks = f.tasks ?? []
-  const started = new Set(list.map(a => titleOf(tasks.map(t => t.title), a.description)))
+  const started = new Set([...(f.doneTitles ?? []), ...list.map(a => titleOf(tasks.map(t => t.title), a.description))])
   return tasks.map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
 }
 
