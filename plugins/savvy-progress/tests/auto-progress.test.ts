@@ -132,3 +132,31 @@ test('a task known done is remembered by title, never dropped, and a new flow cl
   expect(seen?.doneTitles).toBeUndefined()
   expect(seen?.done).toBe(0)
 })
+
+test('a done task stays out of Planned and in doneTitles after its agent leaves the list', async ($, on) => {
+  setup(on)
+  let seen: { done?: number; doneTitles?: string[] } | undefined
+  on('state.set', (_$, e, next) => ((e as { key?: string }).key === 'flow' && (seen = (e as { value?: typeof seen }).value), next(e)))
+  const crew = async () => {
+    const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'AbovePrompt', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } as never })
+    const label = (await ui.findAll({ type: 'Button' })).map(n => (n as unknown as { props?: { label?: string } }).props?.label).find(l => /agents?$/.test(l ?? ''))
+    await ui.unmount()
+    return label
+  }
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Ship it', total: 3, tasks: [{ title: 'a' }, { title: 'b' }, { title: 'c' }] } as never)
+  await spawn($, 'c merge') // w1
+  await end($, 'w1')
+  expect(await crew()).toBe('3 agents') // 1 ended + a and b planned; c is not
+  // 200 more agents push c's own out of the capped list; the flow keeps it.
+  for (let i = 2; i <= 201; i++) {
+    await spawn($, `filler ${i}`)
+    await end($, `w${i}`)
+  }
+  expect(seen).toMatchObject({ done: 1, doneTitles: ['c'] })
+  expect(await crew()).toBe('202 agents') // 200 listed + a and b planned
+  // The next task done is added to it, not swapped for it.
+  await spawn($, 'a merge') // w202
+  await end($, 'w202')
+  expect(seen).toMatchObject({ done: 2, doneTitles: ['c', 'a'] })
+  expect(await crew()).toBe('201 agents') // 200 listed + b planned
+})
