@@ -99,6 +99,8 @@ declare module 'claude-code' {
       status: { header: string; gate: string } | null
       /** The main session's own turn is between a model step and its end (an abort ends it too). */
       mainTurn: boolean
+      /** The validated `stages` entries, "word=phase[+done][+finish]", lower-case. */
+      stages: string[]
     }
   }
 }
