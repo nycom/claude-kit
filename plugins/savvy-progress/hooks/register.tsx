@@ -16,6 +16,7 @@ const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
 const theme = atom({ plugin: 'savvy-progress', key: 'theme' } as const, null)
 const background = atom({ plugin: 'savvy-progress', key: 'background' } as const, [])
 const status = atom({ plugin: 'savvy-progress', key: 'status' } as const, null)
+const stagesAtom = atom({ plugin: 'savvy-progress', key: 'stages' } as const, [] as string[])
 const mainTurn = atom({ plugin: 'savvy-progress', key: 'mainTurn' } as const, false)
 
 // Every looping image is redrawn on the page's main thread each frame: only the most recent runs
@@ -634,27 +635,51 @@ const titleOf = (titles: string[], description: string): string | undefined => {
   return titles.map(norm).filter(t => d === t || d.startsWith(`${t} `)).sort((a, b) => b.length - a.length)[0]
 }
 
-// The delegate workflow's labels move the bar on their own: "<task> implement|review c1|fix c1|validate c1|merge",
-// "<repo> docs". Only labels that name a planned task move it; a coordinator call still overwrites.
-const STAGE: Record<string, Phase> = { implement: 'delegate', review: 'review', fix: 'review', validate: 'review', recheck: 'review', merge: 'close', docs: 'close' }
+// Labels move the bar on their own: "<task> <word> ...". The words come from the `stages` option, entries
+// "word=phase[+done][+finish]": `+done` counts the task done when such an agent answers, `+finish` finishes
+// the flow when an agent whose last word it is answers after every task is done. Only labels that name a
+// planned task move it; a coordinator call still overwrites.
+type Stage = { phase: Phase; isDone: boolean; isFinish: boolean }
+let stages: Record<string, Stage> = {}
+let stageEntries: string[] = []
+let stageIgnored: string[] = []
+const parseStages = (list: readonly string[]): void => {
+  const table = new Map<string, Stage & { entry: string }>()
+  const ignored: string[] = []
+  for (const raw of list) {
+    const [head = '', ...marks] = String(raw).toLowerCase().split('+')
+    const [w = '', phase = ''] = head.split('=')
+    const word = norm(w)
+    const stage = { phase: phase.trim() as Phase, isDone: marks.includes('done'), isFinish: marks.includes('finish') }
+    if (!word || word.includes(' ') || head.split('=').length !== 2 || !PHASES.includes(stage.phase) || marks.some(m => m !== 'done' && m !== 'finish')) {
+      ignored.push(String(raw))
+      continue
+    }
+    if (table.has(word)) ignored.push(`${table.get(word)?.entry} (replaced by a later "${word}")`)
+    table.set(word, { ...stage, entry: `${word}=${stage.phase}${stage.isDone ? '+done' : ''}${stage.isFinish ? '+finish' : ''}` })
+  }
+  stages = Object.fromEntries([...table].map(([k, { entry: _, ...v }]) => [k, v]))
+  stageEntries = [...table.values()].map(v => v.entry)
+  stageIgnored = ignored
+}
 const stageOf = (titles: string[], description: string): { task: string; word: string } | undefined => {
   const task = titleOf(titles, description)
   return task === undefined ? undefined : { task, word: norm(description).slice(task.length).trim().split(' ')[0] ?? '' }
 }
-const isDocs = (a: AgentRun): boolean => norm(a.description).split(' ').pop() === 'docs'
+const isFinishing = (a: AgentRun): boolean => stages[norm(a.description).split(' ').pop() ?? '']?.isFinish === true
 
 // `run` is the agent that just spawned or ended. Phase only moves forward, done never drops.
 const autoFlow = (f: Flow | null, list: AgentRun[], run: AgentRun | undefined): Flow | null => {
   if (!f || f.isFinished || !f.tasks?.length || !run) return f
   const titles = f.tasks.map(t => t.title)
   if (run.status === 'running') {
-    const phase = STAGE[stageOf(titles, run.description)?.word ?? '']
+    const phase = stages[stageOf(titles, run.description)?.word ?? '']?.phase
     return phase && PHASES.indexOf(phase) > PHASES.indexOf(f.phase) ? { ...f, phase } : f
   }
-  const merged = new Set(list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s?.word === 'merge').map(s => s?.task))
+  const merged = new Set(list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s && stages[s.word]?.isDone).map(s => s?.task))
   const done = Math.max(f.done, Math.min(f.total, merged.size))
   const isFinished =
-    done > 0 && done === f.total && isDocs(run) && run.status === 'done' && !list.some(a => a.status === 'running' && (isDocs(a) || titleOf(titles, a.description) !== undefined))
+    done > 0 && done === f.total && isFinishing(run) && run.status === 'done' && !list.some(a => a.status === 'running' && (isFinishing(a) || titleOf(titles, a.description) !== undefined))
   return done === f.done && !isFinished ? f : { ...f, done, ...(isFinished ? { isFinished, phase: 'close' as const } : {}) }
 }
 
@@ -1384,9 +1409,12 @@ async function autoOpen($: EngineInterface, key: string): Promise<void> {
 
 export const register: Register = (on, options) => {
   showCost = options.showCost !== false
+  parseStages(Array.isArray(options.stages) ? options.stages : [])
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     lang = await detectLang($, options.language)
+    await update($, stagesAtom, () => stageEntries)
+    if (stageIgnored.length) $.ui.toast(`savvy-progress: ignored stage entry ${stageIgnored.join(', ')}`)
     await $.tool.register({
       name: 'progress',
       description:

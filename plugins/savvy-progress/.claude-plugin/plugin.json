@@ -33,6 +33,21 @@
       "title": "Show the cost estimate",
       "description": "Draw the approximate cost (the ≈$ figure) in the panel, the cards and the compact header; the cost is still tracked",
       "default": true
+    },
+    "stages": {
+      "type": "string",
+      "multiple": true,
+      "title": "Stage words",
+      "description": "Agent label words that move the bar, as word=phase[+done][+finish]; phase is plan, design, delegate, review or close. Empty: labels move nothing",
+      "default": [
+        "implement=delegate",
+        "review=review",
+        "fix=review",
+        "validate=review",
+        "recheck=review",
+        "merge=close+done",
+        "docs=close+finish"
+      ]
     }
   },
   "homepage": "https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress",
