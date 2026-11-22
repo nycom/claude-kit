@@ -567,15 +567,15 @@ const tierOf = (type: string): string => {
 }
 
 // A model id read for its family, version and long-window suffix, in either order the ids
-// come in: `claude-opus-4-1-20250805` or the older `claude-3-5-sonnet-20241022`. A number of
-// more than two digits is a date, never a version.
+// come in: `claude-opus-4-1-20250805` or the older `claude-3-5-sonnet-20241022`, with `-` or
+// `.` between major and minor. A number of more than two digits is a date, never a version.
 export const modelOf = (raw: string): Required<Pick<AgentRun, 'modelFamily' | 'modelVersion'>> & Pick<AgentRun, 'modelLong'> => {
-  const id = raw.trim().toLowerCase()
-  const core = id.replace(/\[1m\]$/, '')
+  const id = (raw ?? '').trim().toLowerCase()
+  const core = id.replace(/\[1m\]/g, '')
   const family = /fable|mythos|opus|sonnet|haiku/.exec(core)?.[0] ?? ''
   const m = family
-    ? (new RegExp(`${family}-(\\d{1,2})(?!\\d)(?:-(\\d{1,2})(?!\\d))?`).exec(core) ??
-      new RegExp(`(?<!\\d)(\\d{1,2})(?:-(\\d{1,2}))?-${family}`).exec(core))
+    ? (new RegExp(`${family}-(\\d{1,2})(?!\\d)(?:[-.](\\d{1,2})(?!\\d))?`).exec(core) ??
+      new RegExp(`(?<![\\d.])(\\d{1,2})(?:[-.](\\d{1,2}))?-${family}`).exec(core))
     : null
   const [, major = '', minor] = m ?? []
   return { modelFamily: family, modelVersion: minor ? `${major}.${minor}` : major, modelLong: core !== id || undefined }
@@ -588,7 +588,7 @@ const modelName = (id: string): string => {
 }
 
 // `model` is the id as the engine gave it; the fields beside it are read from it each time it is written.
-const withModel = (run: AgentRun, raw: string): AgentRun => ({ ...run, model: raw.trim(), ...modelOf(raw) })
+const withModel = (run: AgentRun, raw: string): AgentRun => ({ ...run, model: (raw ?? '').trim(), ...modelOf(raw) })
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 
@@ -1664,30 +1664,36 @@ export const register: Register = (on, options) => {
     if (!agentId || !usage) return result
 
     const model = usage.model || e.model
+    // The API reports the id without the `[1m]` the step's own id carries: the same model is still long.
+    const [got, asked] = [modelOf(model), modelOf(e.model)]
+    const isLong = got.modelLong || (asked.modelLong && asked.modelFamily === got.modelFamily && asked.modelVersion === got.modelVersion)
     await update($, agents, list =>
       list.map((a): AgentRun =>
         a.agentId !== agentId
           ? a
-          : withModel({
-              ...a,
-              effort: typeof e.effort === 'string' ? e.effort : a.effort,
-              status: 'running' as const,
-              endedAt: undefined,
-              contextTokens:
-                (usage.input_tokens || 0) +
-                (usage.cache_read_input_tokens || 0) +
-                (usage.cache_creation_input_tokens || 0) +
-                (usage.output_tokens || 0),
-              contextMax: windowOf(model),
-              tokens:
-                a.tokens +
-                (usage.input_tokens || 0) +
-                (usage.output_tokens || 0) +
-                (usage.cache_read_input_tokens || 0) +
-                (usage.cache_creation_input_tokens || 0),
-              costUsd: a.costUsd + costOf(model, usage, true),
-              steps: a.steps + 1,
-            }, model),
+          : {
+              ...withModel({
+                ...a,
+                effort: typeof e.effort === 'string' ? e.effort : a.effort,
+                status: 'running' as const,
+                endedAt: undefined,
+                contextTokens:
+                  (usage.input_tokens || 0) +
+                  (usage.cache_read_input_tokens || 0) +
+                  (usage.cache_creation_input_tokens || 0) +
+                  (usage.output_tokens || 0),
+                contextMax: windowOf(model),
+                tokens:
+                  a.tokens +
+                  (usage.input_tokens || 0) +
+                  (usage.output_tokens || 0) +
+                  (usage.cache_read_input_tokens || 0) +
+                  (usage.cache_creation_input_tokens || 0),
+                costUsd: a.costUsd + costOf(model, usage, true),
+                steps: a.steps + 1,
+              }, model),
+              modelLong: isLong || undefined,
+            },
       ),
     )
     await retick($)

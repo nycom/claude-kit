@@ -6,10 +6,11 @@ import type { AgentRun } from '../types'
 
 const USAGE = { input_tokens: 1_000, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
-// The host answers each model request with the model the request ran on.
+// The host answers each model request with the model the request ran on, as the API reports
+// it: without the long-window suffix.
 const answers = (on: OnT) =>
   on('turn.step', async function* (_$, e) {
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], usage: { model: e.model, ...USAGE } } as never
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], usage: { model: e.model.replace('[1m]', ''), ...USAGE } } as never
   })
 // drawing.ts's host, with spawns answered by these models in order, as a hook answering the
 // spawn would; a resume continues under its own id, and once the list runs out the parent's model.
@@ -56,10 +57,17 @@ test('modelOf: family, version and the long-window flag from any id shape', () =
     ['claude-3-5-sonnet-20241022', { modelFamily: 'sonnet', modelVersion: '3.5' }],
     ['claude-3-opus-20240229', { modelFamily: 'opus', modelVersion: '3' }],
     ['claude-opus-5-5[1m]', { modelFamily: 'opus', modelVersion: '5.5', modelLong: true }],
+    ['claude-opus-5-5[1m][beta]', { modelFamily: 'opus', modelVersion: '5.5', modelLong: true }],
     ['haiku', { modelFamily: 'haiku', modelVersion: '' }],
     ['Fable', { modelFamily: 'fable', modelVersion: '' }],
     ['us.anthropic.claude-sonnet-4-5-20250929-v1:0', { modelFamily: 'sonnet', modelVersion: '4.5' }],
     ['claude-mythos-5-1@20261001', { modelFamily: 'mythos', modelVersion: '5.1' }],
+    ['claude-3.5-sonnet', { modelFamily: 'sonnet', modelVersion: '3.5' }],
+    ['anthropic/claude-3.5-sonnet', { modelFamily: 'sonnet', modelVersion: '3.5' }],
+    ['claude-3.7-sonnet', { modelFamily: 'sonnet', modelVersion: '3.7' }],
+    ['claude-sonnet-4.5', { modelFamily: 'sonnet', modelVersion: '4.5' }],
+    ['anthropic/claude-sonnet-4.5', { modelFamily: 'sonnet', modelVersion: '4.5' }],
+    ['claude-opus-4.1', { modelFamily: 'opus', modelVersion: '4.1' }],
     ['gpt-5', { modelFamily: '', modelVersion: '' }],
     ['', { modelFamily: '', modelVersion: '' }],
   ]
@@ -89,7 +97,8 @@ test('model: the resolved id is kept as given, trimmed; inherit or empty falls b
   expect((await runOf($, 'm3'))?.effort).toBeUndefined()
 })
 
-test('model: a fork runs on the model the spawn resolved, not the call model', async ($, on) => {
+// The engine resolves a fork to the parent's model; savvy reads no fork flag and keeps what the spawn answered.
+test('model: a fork keeps the model the spawn answered (the mock answers the parent model)', async ($, on) => {
   setup(on)
   await spawnWith($, { fork: true, model: 'haiku' })
   expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-sonnet-5-5', modelFamily: 'sonnet', modelVersion: '5.5' })
@@ -105,6 +114,18 @@ test('model: a resume keeps the earlier model and effort until a request reports
   expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-opus-5-5', modelFamily: 'opus', modelVersion: '5.5', effort: 'high', status: 'running' })
   await request($, 'm1', 'claude-sonnet-5', 'medium')
   expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-sonnet-5', modelFamily: 'sonnet', modelVersion: '5', effort: 'medium' })
+})
+
+test('model: a long-window run stays long when requests report the plain id, until the model changes', async ($, on) => {
+  setup(on, 'claude-opus-5-5[1m]')
+  answers(on)
+  await spawnWith($)
+  await request($, 'm1', 'claude-opus-5-5[1m]')
+  expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-opus-5-5', modelFamily: 'opus', modelVersion: '5.5', modelLong: true })
+  await request($, 'm1', 'claude-sonnet-5')
+  const run = await runOf($, 'm1')
+  expect(run).toMatchObject({ model: 'claude-sonnet-5', modelFamily: 'sonnet', modelVersion: '5' })
+  expect(run?.modelLong).toBeUndefined()
 })
 
 test('model: a numeric effort leaves the last level', async ($, on) => {
