@@ -62,7 +62,7 @@ const drawn = async ($: $T, component: 'Pane' | 'AbovePrompt', surface: 'desktop
   return [...nodes.map(n => `${imgOf(n as never)?.source ?? ''}${imgOf(n as never)?.alt ?? ''}`), ...nodes.filter(n => n.type === 'Text').map(n => n.text ?? '')].join('|')
 }
 
-for (const mode of ['unasked', 'off'] as const)
+for (const mode of ['unasked', 'off', 'tool'] as const)
   test(`${mode}: an AskUserQuestion call sets no need and toasts nothing`, { options: { sessionNeed: mode }, plugins: [READER] }, async ($, on) => {
     const h = host(on)
     const call = $.tool.call(ASK as never)

@@ -104,6 +104,8 @@ declare module 'claude-code' {
       mainTurn: boolean
       /** The main session's open question, null when none; set only while the sessionNeed option observes. */
       need?: SessionNeed | null
+      /** The validated `stages` entries, "word=phase[+done][+finish]", lower-case. */
+      stages: string[]
     }
   }
 }
