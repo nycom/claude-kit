@@ -15,10 +15,9 @@ const work = async ($: $T, agentId: string) => {
 const drawn = async ($: $T, surface: string) => {
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface, component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } } as never)
   const all = (await ui.findAll({})) as unknown as { text?: string; props?: { alt?: string; source?: string; props?: { source?: string; alt?: string } } }[]
-  const compact = await ui.find({ key: 'compact' })
   const out = all.map(n => `${n.text ?? ''}${n.props?.alt ?? ''}${n.props?.source ?? ''}${n.props?.props?.alt ?? ''}${n.props?.props?.source ?? ''}`).join('|')
   await ui.unmount()
-  return { out, compact: Boolean(compact) }
+  return { out }
 }
 const drawCompact = async ($: $T) => {
   const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', component: 'Pane', requestId: 'savvy-agents', props: { bodyColumns: 120, hasSurvey: false, maxRows: 5 } } as never)
@@ -50,5 +49,18 @@ test('showCost default: the estimate is drawn at all four sites', async ($, on) 
   const { out } = await drawn($, 'desktop')
   expect(out).toMatch(/ctx \d+% · ≈\$/)
   expect(out).toMatch(/running · ≈\$/)
-  expect(await drawCompact($)).toContain('≈$')
+  const compact = await drawCompact($)
+  expect(compact).toContain('≈$')
+  expect(compact).toMatch(/>≈\$[\d.]+ · \d+k · /)
+  expect(compact).toMatch(/≈\$[\d.]+, \d+k tokens/)
+})
+
+test('showCost false: the cost is still written to the agents atom', { options: { showCost: false } }, async ($, on) => {
+  const costs: number[] = []
+  on('state.set', (_$, e, next) => ((e as { key?: string }).key === 'agents' && costs.push(...((e as { value?: { costUsd: number }[] }).value ?? []).map(a => a.costUsd)), next(e)))
+  setup(on)
+  answers(on)
+  await spawn($, 'schema')
+  await work($, 'w1')
+  expect(Math.max(...costs)).toBeGreaterThan(0)
 })

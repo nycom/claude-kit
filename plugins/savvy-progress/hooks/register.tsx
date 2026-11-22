@@ -745,7 +745,7 @@ const parseStatusMap = (text: string, path: string): Parsed | null => {
   const parents: { indent: number; id: number }[] = []
   const blocks = new Map<string, { key: string; word: string }[]>()
   let parentCount = 0
-  for (const line of text.split('\n')) {
+  for (const line of text.split(/\r?\n/)) {
     if (!line.trim() || line.trim().startsWith('#')) continue
     const indent = line.length - line.trimStart().length
     while ((parents.at(-1)?.indent ?? -1) >= indent) parents.pop()
@@ -1727,7 +1727,8 @@ export const register: Register = (on, options) => {
       try {
         return await next(e)
       } finally {
-        await update($, need, n => (n?.since === mine.since && n.text === mine.text ? null : n))
+        // A tool need this dialog covered is still unanswered: it comes back.
+        await update($, need, n => (n?.since === mine.since && n.text === mine.text ? (prev?.source === 'tool' ? prev : null) : n))
       }
     })
 

@@ -197,12 +197,20 @@ for (const mode of ['ask', 'tool', 'both'] as const)
 
 for (const mode of ['tool', 'both'] as const)
   test(`${mode}: progress with only blocked sets the need and leaves the flow null; blocked "" clears`, { options: { sessionNeed: mode }, plugins: [READER] }, async ($, on) => {
-    host(on)
+    const h = host(on)
     await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: ' Which\n port? ' } as never)
     expect(await needOf($)).toEqual({ text: 'Which port?', since: expect.any(Number), source: 'tool' })
     expect(await flowOf($)).toBe(null)
     expect(await drawn($, 'AbovePrompt', 'desktop')).not.toContain('savvy-flow')
     await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: '' } as never)
+    expect(await needOf($)).toBe(null)
+    expect(h.toasts).toEqual(['needs input — Which port?'])
+  })
+
+for (const mode of ['unasked', 'off', 'ask'] as const)
+  test(`${mode}: a progress call that carries blocked sets no need`, { options: { sessionNeed: mode }, plugins: [READER] }, async ($, on) => {
+    host(on)
+    await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: 'Which port?' } as never)
     expect(await needOf($)).toBe(null)
   })
 
@@ -219,4 +227,13 @@ test('both: ask and tool set the need together', { options: { sessionNeed: 'both
   const dialog = await h.ask($.tool.call(ASK as never))
   expect(await needOf($)).toMatchObject({ text: 'Which database?', source: 'ask' })
   await dialog.answer()
+  expect(await needOf($)).toMatchObject({ text: 'from tool', source: 'tool' })
+})
+
+test('both: a need set while the dialog is up stays when it closes', { options: { sessionNeed: 'both' }, plugins: [READER] }, async ($, on) => {
+  const h = host(on)
+  const dialog = await h.ask($.tool.call(ASK as never))
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: 'newer' } as never)
+  await dialog.answer()
+  expect(await needOf($)).toMatchObject({ text: 'newer', source: 'tool' })
 })

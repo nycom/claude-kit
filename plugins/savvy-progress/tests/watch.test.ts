@@ -249,6 +249,12 @@ test('status map: configured words give done, skip and the phase, forward only',
   expect(await band($)).toBe('Team board: Done, 100%')
 })
 
+test('status map: CRLF line endings keep a commented entry', { options: { watch: ['status.yaml'], statusWords: WORDS }, plugins: [READER] }, async ($, on) => {
+  host(on, { '/w/status.yaml': STATUS_YAML.replaceAll('\n', '\r\n') })
+  await edit($, '/w/status.yaml')
+  expect(((await atomOf($, 'flow'))?.tasks as { title: string }[]).map(t => t.title)).toEqual(['schema', 'api', 'search'])
+})
+
 test('status map: checkboxes win when a file has both', { options: { watch: ['status.yaml'], statusWords: WORDS }, plugins: [READER] }, async ($, on) => {
   host(on, { '/w/status.yaml': `${STATUS_YAML}- [ ] one\n` })
   await edit($, '/w/status.yaml')

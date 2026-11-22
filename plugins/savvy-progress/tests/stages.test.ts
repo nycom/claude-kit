@@ -46,6 +46,23 @@ test('custom stage words move the phase, tick a task and finish the flow', { opt
   expect(await band($)).toBe('Ship it: Done, 100%')
 })
 
+test('under a custom list the default words move nothing', { options: { stages: CUSTOM } }, async ($, on) => {
+  setup(on)
+  await plan($)
+  await spawn($, 'a review')
+  await spawn($, 'a merge')
+  await end($, 'w2')
+  expect(await band($)).toBe('Ship it: Plan, 0%')
+})
+
+test('an entry with an unknown marker is skipped and named', { options: { stages: ['y=review+bogus'] } }, async ($, on) => {
+  setup(on)
+  const out = toasts(on)
+  await start($)
+  expect(out.join('\n')).toContain('y=review+bogus')
+  expect(published).toEqual([])
+})
+
 test('a bad entry is skipped and toasted once, a repeated word keeps the last', { options: { stages: ['build=delegate', 'oops', 'two words=review', 'x=nowhere', 'build=review'] } }, async ($, on) => {
   setup(on)
   const out = toasts(on)
