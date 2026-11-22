@@ -128,6 +128,14 @@ test('model: a long-window run stays long when requests report the plain id, unt
   expect(run?.modelLong).toBeUndefined()
 })
 
+test('model: a request reporting a padded id stores it trimmed', async ($, on) => {
+  setup(on)
+  answers(on)
+  await spawnWith($)
+  await request($, 'm1', '  claude-opus-5-5 ')
+  expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-opus-5-5', modelFamily: 'opus', modelVersion: '5.5' })
+})
+
 test('model: a numeric effort leaves the last level', async ($, on) => {
   setup(on)
   answers(on)
@@ -144,10 +152,36 @@ test('model: a run with no steps seen takes the turn model', async ($, on) => {
   expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-3-5-haiku-20241022', modelFamily: 'haiku', modelVersion: '3.5' })
 })
 
+test('model: a long-window run with no requests stays long when the turn reports the plain id', async ($, on) => {
+  setup(on, 'claude-opus-5-5[1m]', 'claude-opus-5-5[1m]')
+  await spawnWith($)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: 'm1', agentId: 'm1', usage: { model: 'claude-opus-5-5', ...USAGE } } as never)
+  expect(await runOf($, 'm1')).toMatchObject({ model: 'claude-opus-5-5', modelFamily: 'opus', modelVersion: '5.5', modelLong: true })
+  // A turn that reports another model clears it.
+  await spawnWith($)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 0, isAborted: false, turnId: 'm2', agentId: 'm2', usage: { model: 'claude-sonnet-5', ...USAGE } } as never)
+  const run = await runOf($, 'm2')
+  expect(run).toMatchObject({ model: 'claude-sonnet-5', modelFamily: 'sonnet' })
+  expect(run?.modelLong).toBeUndefined()
+})
+
+const cardText = async ($: $T) => (await draw($)).map(n => imgOf<{ source?: string }>(n as never)?.source ?? '').join('\n')
+
+test('card: a family with no version reads as the family alone, for an alias and a family-then-date id', async ($, on) => {
+  setup(on, 'haiku', 'claude-sonnet-20250101')
+  await spawnWith($)
+  expect(await cardText($)).toContain('> · Haiku<')
+  await end($, 'm1')
+  await spawnWith($, { description: 'dated id' })
+  const src = await cardText($)
+  expect(src).toContain('> · Sonnet<')
+  expect(src).not.toContain('20250101')
+})
+
 test('card: an id in the older order names its version, not its date', async ($, on) => {
   setup(on, 'claude-3-5-sonnet-20241022')
   await spawnWith($)
-  const src = (await draw($)).map(n => imgOf<{ source?: string }>(n as never)?.source ?? '').join('\n')
+  const src = await cardText($)
   expect(src).toContain('Sonnet 3.5')
   expect(src).not.toContain('20241022')
 })

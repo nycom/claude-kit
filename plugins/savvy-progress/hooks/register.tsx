@@ -583,12 +583,18 @@ export const modelOf = (raw: string): Required<Pick<AgentRun, 'modelFamily' | 'm
 
 const modelName = (id: string): string => {
   const { modelFamily: family, modelVersion: version } = modelOf(id)
-  if (!version) return id.replace(/^claude-/, '').replace(/\[.*\]$/, '') || '—'
-  return `${family.charAt(0).toUpperCase()}${family.slice(1)} ${version}`
+  if (!family) return id.replace(/^claude-/, '').replace(/\[.*\]$/, '') || '—'
+  return `${family.charAt(0).toUpperCase()}${family.slice(1)}${version ? ' ' + version : ''}`
 }
 
 // `model` is the id as the engine gave it; the fields beside it are read from it each time it is written.
-const withModel = (run: AgentRun, raw: string): AgentRun => ({ ...run, model: (raw ?? '').trim(), ...modelOf(raw) })
+// The API reports an id without its `[1m]`, so a `prior` reading that was long, of the same family
+// and version, keeps the run long.
+const withModel = (run: AgentRun, raw: string, prior?: Pick<AgentRun, 'modelFamily' | 'modelVersion' | 'modelLong'>): AgentRun => {
+  const got = modelOf(raw)
+  const isSame = prior?.modelFamily === got.modelFamily && prior?.modelVersion === got.modelVersion
+  return { ...run, model: (raw ?? '').trim(), ...got, modelLong: got.modelLong || (prior?.modelLong && isSame) || undefined }
+}
 
 const norm = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 
@@ -1664,36 +1670,30 @@ export const register: Register = (on, options) => {
     if (!agentId || !usage) return result
 
     const model = usage.model || e.model
-    // The API reports the id without the `[1m]` the step's own id carries: the same model is still long.
-    const [got, asked] = [modelOf(model), modelOf(e.model)]
-    const isLong = got.modelLong || (asked.modelLong && asked.modelFamily === got.modelFamily && asked.modelVersion === got.modelVersion)
     await update($, agents, list =>
       list.map((a): AgentRun =>
         a.agentId !== agentId
           ? a
-          : {
-              ...withModel({
-                ...a,
-                effort: typeof e.effort === 'string' ? e.effort : a.effort,
-                status: 'running' as const,
-                endedAt: undefined,
-                contextTokens:
-                  (usage.input_tokens || 0) +
-                  (usage.cache_read_input_tokens || 0) +
-                  (usage.cache_creation_input_tokens || 0) +
-                  (usage.output_tokens || 0),
-                contextMax: windowOf(model),
-                tokens:
-                  a.tokens +
-                  (usage.input_tokens || 0) +
-                  (usage.output_tokens || 0) +
-                  (usage.cache_read_input_tokens || 0) +
-                  (usage.cache_creation_input_tokens || 0),
-                costUsd: a.costUsd + costOf(model, usage, true),
-                steps: a.steps + 1,
-              }, model),
-              modelLong: isLong || undefined,
-            },
+          : withModel({
+              ...a,
+              effort: typeof e.effort === 'string' ? e.effort : a.effort,
+              status: 'running' as const,
+              endedAt: undefined,
+              contextTokens:
+                (usage.input_tokens || 0) +
+                (usage.cache_read_input_tokens || 0) +
+                (usage.cache_creation_input_tokens || 0) +
+                (usage.output_tokens || 0),
+              contextMax: windowOf(model),
+              tokens:
+                a.tokens +
+                (usage.input_tokens || 0) +
+                (usage.output_tokens || 0) +
+                (usage.cache_read_input_tokens || 0) +
+                (usage.cache_creation_input_tokens || 0),
+              costUsd: a.costUsd + costOf(model, usage, true),
+              steps: a.steps + 1,
+            }, model, modelOf(e.model)),
       ),
     )
     await retick($)
@@ -1732,7 +1732,7 @@ export const register: Register = (on, options) => {
                 }
               : {}),
           }
-          return fallback ? withModel(ended, ended.model) : ended
+          return fallback ? withModel(ended, ended.model, a) : ended
         }),
       )
       if (wasRunning) await update($, flow, f => autoFlow(f, after, after.find(a => a.agentId === agentId)))
