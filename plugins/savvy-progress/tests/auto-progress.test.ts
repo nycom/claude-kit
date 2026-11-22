@@ -116,3 +116,19 @@ test('a docs agent that failed does not finish the flow', async ($, on) => {
   await end($, 'w3', 'error')
   expect(await band($)).toBe('Ship it: Tasks 2/2, 100%')
 })
+
+test('a task known done is remembered by title, never dropped, and a new flow clears it', async ($, on) => {
+  setup(on)
+  let seen: { done?: number; doneTitles?: string[] } | undefined
+  on('state.set', (_$, e, next) => ((e as { key?: string }).key === 'flow' && (seen = (e as { value?: typeof seen }).value), next(e)))
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Ship it', total: 3, tasks: [{ title: 'a' }, { title: 'b' }, { title: 'c' }] } as never)
+  await spawn($, 'c merge') // w1
+  await end($, 'w1')
+  expect(seen).toMatchObject({ done: 1, doneTitles: ['c'] })
+  await spawn($, 'a merge') // w2
+  await end($, 'w2')
+  expect(seen).toMatchObject({ done: 2, doneTitles: ['c', 'a'] })
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', title: 'Next', total: 1, tasks: [{ title: 'c' }] } as never)
+  expect(seen?.doneTitles).toBeUndefined()
+  expect(seen?.done).toBe(0)
+})
