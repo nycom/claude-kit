@@ -61,6 +61,20 @@
         "merge=close+done",
         "docs=close+finish"
       ]
+    },
+    "watch": {
+      "type": "string",
+      "multiple": true,
+      "title": "Plan files",
+      "description": "Globs (*, **, ?) of files whose checkboxes become the flow when this session edits them; a relative glob is the session folder's. Empty: no file is watched",
+      "default": []
+    },
+    "statusWords": {
+      "type": "string",
+      "multiple": true,
+      "title": "Status words",
+      "description": "For a watched file without checkboxes: the words of its key: status lines, as word=done, word=skip or word=<phase>. Empty: such files are not read",
+      "default": []
     }
   },
   "homepage": "https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress",

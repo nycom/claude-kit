@@ -694,6 +694,133 @@ const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
   return tasks.map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
 }
 
+// Plan files: the option `watch` lists globs of files whose checkboxes, after a main-session Edit or Write,
+// are the flow; with `statusWords` a file with none may be a `key: status` map instead. A relative glob is
+// the session directory's, and matches nothing when the engine gives none.
+type Parsed = { title: string; tasks: { title: string; isDone: boolean }[]; phase?: Phase }
+let watch: string[] = []
+let statusWords = new Map<string, 'done' | 'skip' | Phase>()
+const GLOB_PART: Record<string, string> = { '**/': '(?:.*/)?', '**': '.*', '*': '[^/]*', '?': '[^/]' }
+const globToRegExp = (glob: string): RegExp => {
+  const body = glob.replace(/\*\*\/|\*\*|[*?]|[.+^$|()[\]{}\\]/g, t => GLOB_PART[t] ?? `\\${t}`)
+  return new RegExp(`^${body}$`)
+}
+// shortcut: only a leading '/' counts as absolute and relative globs join with '/'; extend it if Windows paths are to be watched.
+const globPath = (glob: string, cwd: string): string =>
+  glob.startsWith('/') ? glob : cwd ? `${cwd.replace(/\/$/, '')}/${glob.replace(/^\.\//, '')}` : ''
+// The first watch entry the path matches, -1 for none: earlier entries outrank later ones.
+const watchRank = (path: string, cwd: string): number =>
+  watch.findIndex(g => {
+    const p = globPath(g, cwd)
+    return !!p && globToRegExp(p).test(path)
+  })
+const fileTitle = (text: string, path: string): string => clip(oneLine(/^# (.+)$/m.exec(text)?.[1]) || path.split('/').pop() || path, MAX_TITLE)
+
+const BOX = /^(\s*)[-*+] \[( |x|X)\] (.+)$/
+// Boxes at the shallowest indent are the tasks; deeper ones are their detail.
+const parseChecklist = (text: string, path: string): Parsed | null => {
+  const boxes = text.split(/\r?\n/).map(l => BOX.exec(l)).filter((m): m is RegExpExecArray => m !== null)
+  const indent = Math.min(...boxes.map(m => m[1]?.length ?? 0))
+  const tasks = boxes
+    .filter(m => m[1]?.length === indent)
+    .map(m => ({ title: clip(oneLine(m[3]), MAX_TITLE), isDone: m[2] !== ' ' }))
+    .filter(t => t.title)
+    .slice(0, MAX_TASKS)
+  return tasks.length ? { title: fileTitle(text, path), tasks } : null
+}
+
+const parseStatusWords = (list: readonly string[]): Map<string, 'done' | 'skip' | Phase> => {
+  const words = new Map<string, 'done' | 'skip' | Phase>()
+  for (const raw of list) {
+    const [word = '', to = '', ...rest] = String(raw).toLowerCase().split('=').map(p => p.trim())
+    if (/^[\w-]+$/.test(word) && !rest.length && (to === 'done' || to === 'skip' || PHASES.includes(to as Phase))) words.set(word, to as 'done' | 'skip' | Phase)
+  }
+  return words
+}
+// A block (one parent, one indent) of `key: word` lines is a status map when one of its words is configured:
+// each entry is a task, done or left out as its word maps; the phase is the furthest one a task not done maps to.
+const ENTRY = /^(\s*)([\w.-]+):\s*([\w-]+)\s*(#.*)?$/
+const PARENT = /^\s*[\w.-]+:\s*(#.*)?$/
+const parseStatusMap = (text: string, path: string): Parsed | null => {
+  const parents: { indent: number; id: number }[] = []
+  const blocks = new Map<string, { key: string; word: string }[]>()
+  let parentCount = 0
+  for (const line of text.split('\n')) {
+    if (!line.trim() || line.trim().startsWith('#')) continue
+    const indent = line.length - line.trimStart().length
+    while ((parents.at(-1)?.indent ?? -1) >= indent) parents.pop()
+    const m = ENTRY.exec(line)
+    const block = `${parents.at(-1)?.id ?? 0}:${indent}`
+    if (m) blocks.set(block, [...(blocks.get(block) ?? []), { key: m[2] ?? '', word: (m[3] ?? '').toLowerCase() }])
+    else if (PARENT.test(line)) parents.push({ indent, id: ++parentCount })
+  }
+  const tasks: Parsed['tasks'] = []
+  let phase: Phase | undefined
+  for (const entries of blocks.values()) {
+    if (!entries.some(e => statusWords.has(e.word))) continue
+    for (const { key, word } of entries) {
+      const to = statusWords.get(word)
+      if (to === 'skip') continue
+      tasks.push({ title: clip(oneLine(key), MAX_TITLE), isDone: to === 'done' })
+      if (to && to !== 'done' && (!phase || PHASES.indexOf(to) > PHASES.indexOf(phase))) phase = to
+    }
+  }
+  return tasks.length ? { title: fileTitle(text, path), tasks: tasks.slice(0, MAX_TASKS), phase } : null
+}
+
+// A read of the same file carries its flow on: done never drops, the phase only moves forward until the file
+// is finished, and a new unchecked task reopens it. Another file's read starts afresh.
+const fileFlow = (prev: Flow | null, parsed: Parsed, path: string): Flow => {
+  const same = prev?.source === path ? prev : null
+  const checked = parsed.tasks.filter(t => t.isDone).map(t => norm(t.title))
+  const total = parsed.tasks.length
+  const doneTitles = [...new Set([...(same?.doneTitles ?? []), ...checked])]
+  const done = Math.min(total, Math.max(same?.done ?? 0, checked.length))
+  const isFinished = checked.length === total
+  const found: Phase = isFinished ? 'close' : (parsed.phase ?? (done ? 'delegate' : 'plan'))
+  const was = same && !same.isFinished ? same.phase : 'plan'
+  return {
+    ...blank(),
+    ...same,
+    title: parsed.title,
+    total,
+    done,
+    phase: PHASES.indexOf(was) > PHASES.indexOf(found) ? was : found,
+    isFinished,
+    tasks: parsed.tasks.map(t => ({ title: t.title, tier: '', after: [] })),
+    source: path,
+    ...(doneTitles.length ? { doneTitles } : {}),
+  }
+}
+// A flow reported through `progress` (no source) wins until it is finished; another file takes over a file
+// flow only once that one is finished or came from a later watch entry.
+const isTakenBy = (prev: Flow | null, path: string, rank: number, cwd: string): boolean =>
+  !prev || prev.isFinished || prev.source === path || (prev.source !== undefined && watchRank(prev.source, cwd) > rank)
+
+const sessionCwd = async ($: EngineInterface): Promise<string> => {
+  try {
+    return await $.session.cwd()
+  } catch {
+    return ''
+  }
+}
+async function readWatched($: EngineInterface, path: string): Promise<void> {
+  const cwd = await sessionCwd($)
+  const rank = watchRank(path, cwd)
+  if (rank < 0) return
+  const text = String(await $.fs.read(path))
+  const parsed = parseChecklist(text, path) ?? (statusWords.size ? parseStatusMap(text, path) : null)
+  if (parsed) await update($, flow, prev => (isTakenBy(prev, path, rank, cwd) ? fileFlow(prev, parsed, path) : prev))
+}
+// At session start, so a resumed session shows its plan before the next edit; wildcard globs wait for one.
+async function readLiterals($: EngineInterface): Promise<void> {
+  const cwd = await sessionCwd($)
+  for (const g of watch.filter(g => !/[*?]/.test(g))) {
+    const path = globPath(g, cwd)
+    if (path && (await $.fs.exists(path))) await readWatched($, path).catch(() => undefined)
+  }
+}
+
 const totals = (list: AgentRun[], at: number) => {
   const cost = list.reduce((s, a) => s + a.costUsd, 0)
   const tokens = list.reduce((s, a) => s + a.tokens, 0)
@@ -1418,6 +1545,8 @@ async function autoOpen($: EngineInterface, key: string): Promise<void> {
 export const register: Register = (on, options) => {
   showCost = options.showCost !== false
   parseStages(Array.isArray(options.stages) ? options.stages : [])
+  watch = (Array.isArray(options.watch) ? options.watch : []).map(String).filter(g => g.trim())
+  statusWords = parseStatusWords(Array.isArray(options.statusWords) ? options.statusWords : [])
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     lang = await detectLang($, options.language)
@@ -1499,6 +1628,7 @@ export const register: Register = (on, options) => {
     themeEvery = 0
     themeMtime = 0
     await loadTheme($)
+    if (watch.length) await readLiterals($).catch(() => undefined)
     return started
   })
 
@@ -1616,6 +1746,16 @@ export const register: Register = (on, options) => {
       await update($, flow, prev => (prev ? { ...prev, running: Math.max(0, prev.running - 1) } : prev))
     }
   })
+
+  // Plan files, only when some are watched: an empty list registers nothing.
+  if (watch.length) {
+    on('tool.call', { tool: ['Edit', 'Write'] }, async ($, e, next) => {
+      const r = await next(e)
+      // The tool has run: a failed read or parse must not fail its call.
+      if (!e.agentId && !r.isError && r.deny === undefined) await readWatched($, str(e.file_path)).catch(() => undefined)
+      return r
+    })
+  }
 
   // Background work, never auto-opening the pane: a shell sent to the background, a monitor,
   // a cron or a wakeup; a wakeup's `stop` ends the waiting wakeups.
