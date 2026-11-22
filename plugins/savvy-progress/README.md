@@ -100,4 +100,6 @@ While the skins mod has a dark skin on, its theme wins over the file, and a `/sk
 
 `autoOpen`: `any` (default) or `savvy`. With `any` the panel opens by itself, once per flow, when any subagent starts or a plan is reported. With `savvy` only a `savvy-*` worker or a plan opens it. While clawpit has taken over, neither opens it. `/agents-info` toggles it either way.
 
+`showCost`: boolean, default `true`. When `false`, savvy leaves the approximate cost (the ≈$ figure) out of its own drawing: the compact header, the card dim line (which then reads "ctx 38%" alone), the panel totals line and the summary alt text. The cost is still computed and written to the agents atom.
+
 Install instructions are in the [repository README](../../README.md).
