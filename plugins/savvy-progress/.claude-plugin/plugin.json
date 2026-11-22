@@ -33,6 +33,19 @@
       "title": "Show the cost estimate",
       "description": "Draw the approximate cost (the ≈$ figure) in the panel, the cards and the compact header; the cost is still tracked",
       "default": true
+    },
+    "sessionNeed": {
+      "type": "string",
+      "title": "Session needs you",
+      "description": "Light Needs you when this session asks you a question?",
+      "default": "unasked",
+      "options": [
+        "unasked",
+        "off",
+        "both",
+        "ask",
+        "tool"
+      ]
     }
   },
   "homepage": "https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress",

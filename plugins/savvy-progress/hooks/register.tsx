@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HookFailure, Register, RenderElement } from 'claude-code'
 
-import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
+import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask, SessionNeed } from '../types'
 import type { ControlProps } from './controls'
 import type { MarkProps } from './mark'
 
@@ -17,6 +17,7 @@ const theme = atom({ plugin: 'savvy-progress', key: 'theme' } as const, null)
 const background = atom({ plugin: 'savvy-progress', key: 'background' } as const, [])
 const status = atom({ plugin: 'savvy-progress', key: 'status' } as const, null)
 const mainTurn = atom({ plugin: 'savvy-progress', key: 'mainTurn' } as const, false)
+const need = atom({ plugin: 'savvy-progress', key: 'need' } as const, null)
 
 // Every looping image is redrawn on the page's main thread each frame: only the most recent runs
 // of the pane loop, the rest hold their first frame. Which ones changes only as runs start and end.
@@ -1015,7 +1016,8 @@ const needsAttention = (a: AgentRun): boolean => a.status === 'running' && (!!a.
 const failedHistory = (a: AgentRun): string =>
   a.status !== 'running' && (a.failedAttempts ?? 0) >= 3 ? `${tr().failedFlag.toLowerCase()} ×${a.failedAttempts}` : ''
 
-const flagOf = (a: AgentRun): string => (a.blocked ? tr().needsInput : `${tr().failedFlag} ×${a.failedAttempts ?? 0}`)
+type Flagged = Pick<AgentRun, 'description' | 'type' | 'blocked' | 'failedAttempts'>
+const flagOf = (a: Flagged): string => (a.blocked ? tr().needsInput : `${tr().failedFlag} ×${a.failedAttempts ?? 0}`)
 
 // The red label: static, no animation.
 const pillW = (text: string): number => Math.round(textWidth(text, 10) + 12)
@@ -1085,11 +1087,14 @@ ${rowLine(DW, h)}`,
 }
 
 // Compact view: one line per flagged agent, so the label is never hidden.
-const flagSvg = (W: number, a: AgentRun): string => {
+const flagSvg = (W: number, a: Flagged): string => {
   const flag = flagOf(a)
   const text = `${a.description || a.type}${a.blocked ? ` — ${a.blocked}` : ''}`
   return svg(W, 20, `${pill(0, 2, flag)}<text class="t" x="${pillW(flag) + 8}" y="14" font-family="${FONT}" font-size="12">${xml(fitText(text, 12, W - pillW(flag) - 8))}</text>`)
 }
+
+// The main session's question, flagged as a worker's is.
+const needRow = (n: SessionNeed): Flagged => ({ description: 'Claude', type: '', blocked: n.text })
 
 const agentAlt = (a: AgentRun): string => {
   const s = tr()
@@ -1534,6 +1539,24 @@ export const register: Register = (on, options) => {
     return { result: matched ? 'ok' : `ignored: no panel row for agent ${agentId}` }
   })
 
+  // sessionNeed ask (or both): the main session's AskUserQuestion is its need while the dialog is up.
+  // unasked and off observe nothing. A subagent's question, or a dialog a plugin raised (its $.ui.ask), is not it.
+  if (options.sessionNeed === 'ask' || options.sessionNeed === 'both')
+    on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+      const by = next.origin?.plugin
+      const text = clip(oneLine(e.questions?.[0]?.question), 300)
+      if (e.agentId || (by && by !== 'engine') || !text) return next(e)
+      const mine: SessionNeed = { text, since: await $.clock.now(), source: 'ask' }
+      const prev = await read($, need)
+      await update($, need, () => mine)
+      if (prev?.text !== text) $.ui.toast(`${tr().toastInput} — ${clip(text, 120)}`)
+      try {
+        return await next(e)
+      } finally {
+        await update($, need, n => (n?.since === mine.since && n.text === mine.text ? null : n))
+      }
+    })
+
   // Safety net: worker launches move the faint layer even if the orchestrator forgets to report.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     const type = String(e.subagent_type ?? '')
@@ -1572,6 +1595,7 @@ export const register: Register = (on, options) => {
     // The user's own next prompt (typed, or from the phone) ends the finish moment: held runs move to
     // Ended, which folds once nothing runs. Notifications, schedules and peers never do.
     if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') {
+      if (await read($, need)) await update($, need, () => null)
       const list = await read($, agents)
       if (list.some(a => a.heldDone)) {
         const after = await update($, agents, l => l.map(a => (a.heldDone ? { ...a, heldDone: undefined } : a)))
@@ -1589,11 +1613,14 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // A new, resumed or cleared session starts with no background rows; the next stop's
-  // reconcile adds back what still runs. A compaction keeps them.
+  // A new, resumed or cleared session starts with no background rows and no open question; the next
+  // stop's reconcile adds back what still runs. A compaction keeps them.
   on('classic.SessionStart', async ($, e, next) => {
     const result = await next(e)
-    if (e.source !== 'compact') await setBackground($, () => []).catch(() => undefined)
+    if (e.source !== 'compact') {
+      await setBackground($, () => []).catch(() => undefined)
+      if (await read($, need)) await update($, need, () => null)
+    }
     return result
   })
 
@@ -1814,6 +1841,7 @@ export const register: Register = (on, options) => {
     const hasEnded = finished.length + bgEnded.length > 0
     const stopButton = (x: BackgroundTask) => <Button key={`stop-${x.id}`} label="■" plain dimColor hover={{ color: pal?.red ?? RED }} onPress={() => stopTask($, x)} />
     const flagged = list.filter(needsAttention)
+    const asked = await read($, need)
     const summary = `${showCost ? `≈${fmtCost(t.cost)}, ` : ''}${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
 
     if (e.surface === 'desktop' && 'Svg' in ui) {
@@ -1829,6 +1857,7 @@ export const register: Register = (on, options) => {
           {text}
         </Text>
       )
+      const needLine = asked && <Svg key="need" source={flagSvg(W, needRow(asked))} alt={`Claude: ${s.needsInput}: ${asked.text}`} width={W} height={20} />
       const statusWord = (status: string) => (status === 'running' ? s.isRunning : status === 'failed' ? s.isFailed : status === 'planned' ? s.isPlanned : s.isFinished)
       // The most recent running agents loop, then the most recent background tasks; the rest hold.
       // Agents first: a long-lived server, or a task reconcile found (started "now"), is not work.
@@ -1871,6 +1900,7 @@ export const register: Register = (on, options) => {
         const icons = compactIcons(W, list, planned, a => looping.has(a))
         return (
           <Box flexDirection="column" gap={1}>
+            {needLine}
             <Box flexDirection="row">
               <Client key="icons" module="./mark.tsx" props={{ source: compactIconsSvg(icons.shown), alt: `${list.length} ${s.agentsCount}`, width: icons.width, height: 32 } satisfies MarkProps} />
               <Svg source={compactSvg(W - icons.width, icons.more, t)} alt={summary} width={W - icons.width} height={32} />
@@ -1900,7 +1930,7 @@ export const register: Register = (on, options) => {
         <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
       )
       const budget = budgetOf()
-      for (const el of [header, toggleDone]) budget.add(el, true)
+      for (const el of needLine ? [needLine, header, toggleDone] : [header, toggleDone]) budget.add(el, true)
       // Running cards first, then planned tasks, then background work; once one does not fit, the rest are a count.
       const runCards = budget.take(running, card)
       const isRunCut = runCards.length < running.length
@@ -1917,6 +1947,7 @@ export const register: Register = (on, options) => {
       const moreRun = section('more-run', s.moreRunning(moreRunning))
       return (
         <Box flexDirection="column">
+          {needLine}
           {header}
           {isEmpty && <Text dimColor>{s.empty}</Text>}
           {running.length > 0 && section('h-run', `${s.running} · ${running.length}`)}
@@ -1940,7 +1971,7 @@ export const register: Register = (on, options) => {
     const cols = Math.max(24, e.props.bodyColumns || 40)
     const barW = Math.max(6, Math.min(20, cols - 34))
     // Fixed white on RED (the palette's background on its red): the same contrast on any terminal theme.
-    const flagText = (a: AgentRun) => (
+    const flagText = (a: Flagged) => (
       <Text backgroundColor={pal?.red ?? RED} color={pal?.background ?? '#ffffff'} bold>
         {` ${flagOf(a)} `}
       </Text>
@@ -2003,6 +2034,11 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
+        {asked && (
+          <Text key="need" wrap="truncate-end">
+            {flagText(needRow(asked))} Claude — {asked.text}
+          </Text>
+        )}
         <Box flexDirection="row" justifyContent="space-between">
           <Text bold wrap="truncate-end">
             {title}
@@ -2074,7 +2110,8 @@ export const register: Register = (on, options) => {
     await paletteOf($)
     const f = await read($, flow)
     const list = await read($, agents)
-    const flagged = list.filter(needsAttention).length
+    // The main session's own question counts as one more.
+    const flagged = list.filter(needsAttention).length + ((await read($, need)) ? 1 : 0)
     // Never reads `now`: the band must not redraw on the clock's tick. Held runs carry their end time.
     const noFlowTitle = f === null ? bandTitle(null, list, 0) : ''
     // With no flow the band still shows up while any agent runs or is held, or one needs attention.

@@ -72,6 +72,9 @@ export type BackgroundTask = {
   nextAt?: number
 }
 
+/** The main session waiting on the person: the question, when it was asked, and how savvy heard it. */
+export type SessionNeed = { text: string; since: number; source: 'ask' | 'tool' }
+
 export type Panel = {
   isCompact: boolean
   isDoneCollapsed: boolean
@@ -99,6 +102,8 @@ declare module 'claude-code' {
       status: { header: string; gate: string } | null
       /** The main session's own turn is between a model step and its end (an abort ends it too). */
       mainTurn: boolean
+      /** The main session's open question, null when none; set only while the sessionNeed option observes. */
+      need?: SessionNeed | null
     }
   }
 }
