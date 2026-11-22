@@ -27,6 +27,8 @@ A flagged card gets a static red label in the full panel, the compact panel (one
 
 A toast fires on a crossing only: the failed count reaching three, or a new question (a different one from the question already showing). A single `step` call that does both toasts twice. A fourth failure or the same question again stays quiet; a question asked again after it cleared toasts. The question is cut to 120 characters in the toast.
 
+The main session can need you too. The `sessionNeed` option (string, default `unasked`; options `unasked`, `off`, `both`, `ask`, `tool`) controls this. `unasked` and `off` both mean savvy watches nothing. With `ask` or `both`, while the main session's AskUserQuestion dialog is open, its first question (on one line, cut to 300 characters) becomes the session's need. savvy publishes it in the `need` atom (`{ text, since, source: 'ask' }`, or null when there is none). The panel then starts with one **Needs input** line, "Claude — <question>" (the same line on the terminal), and the band's **⚠ N need(s) attention** chip counts it, even with no flow and no agents. A new question toasts "needs input — <question>", cut to 120 characters. The need clears when the dialog's call returns, at your next prompt (typed, or from the phone), and when a new, resumed or cleared session starts. A compaction keeps it. Questions from a subagent are ignored, and so are dialogs another plugin opens with `$.ui.ask`. Watching the dialog adds no model tokens. `tool` is reserved for the `blocked` field on `progress`, which is not built yet, so for now `tool` watches nothing.
+
 ## With clawpit
 
 While the clawpit mod is loaded and has taken over (its `takeover` flag is on), savvy-progress stands down in two places: the band above the prompt draws nothing on the desktop, where clawpit draws its own, and the panel no longer opens by itself. Other surfaces, such as the terminal, keep the band. The auto-open stand-down is session-wide, not per surface (known limit): a terminal attached to the same session gets no auto-open either. The tools, the atoms, the toasts and `/agents-info` keep working.
@@ -101,5 +103,7 @@ While the skins mod has a dark skin on, its theme wins over the file, and a `/sk
 `autoOpen`: `any` (default) or `savvy`. With `any` the panel opens by itself, once per flow, when any subagent starts or a plan is reported. With `savvy` only a `savvy-*` worker or a plan opens it. While clawpit has taken over, neither opens it. `/agents-info` toggles it either way.
 
 `showCost`: boolean, default `true`. When `false`, savvy leaves the approximate cost (the ≈$ figure) out of its own drawing: the compact header, the card dim line (which then reads "ctx 38%" alone), the panel totals line and the summary alt text. The cost is still computed and written to the agents atom.
+
+`sessionNeed`: string, default `unasked`. Whether savvy watches the main session's AskUserQuestion dialog; see "Attention flags".
 
 Install instructions are in the [repository README](../../README.md).
