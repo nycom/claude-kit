@@ -54,6 +54,7 @@ type ProgressInput = {
   phase?: Phase
   finished?: boolean
   tasks?: { title?: string; tier?: string; after?: number[] }[]
+  blocked?: string
 }
 
 // The Omarchy palette, when its file exists; render handlers copy the atom here and
@@ -1451,6 +1452,9 @@ export const register: Register = (on, options) => {
               required: ['title', 'tier'],
             },
           },
+          ...(options.sessionNeed === 'tool' || options.sessionNeed === 'both'
+            ? { blocked: { type: 'string', description: 'The question you are waiting on the user for; an empty string clears it' } }
+            : {}),
         },
       },
     })
@@ -1515,6 +1519,16 @@ export const register: Register = (on, options) => {
     // and changes nothing, or any subagent could rename, finish or reset the flow.
     if (e.agentId) return { result: 'ignored: only the main session reports the flow' }
     const input = e as unknown as ProgressInput
+    if (input.blocked !== undefined && (options.sessionNeed === 'tool' || options.sessionNeed === 'both')) {
+      const text = clip(oneLine(input.blocked), 300)
+      const had = await read($, need)
+      const since = await $.clock.now()
+      await update($, need, () => (text ? { text, since, source: 'tool' } : null))
+      if (text && had?.text !== text) $.ui.toast(`${tr().toastInput} — ${clip(text, 120)}`)
+      // A call carrying only blocked must not start a blank flow.
+      if (input.title === undefined && input.total === undefined && input.done === undefined && input.phase === undefined && input.finished === undefined && !input.tasks)
+        return { result: text ? 'ok: blocked' : 'ok: cleared' }
+    }
     const prev = await read($, flow)
     if (isNewFlow(prev, input) && input.title !== undefined) {
       // A new flow starts with a clean list; agents still running stay.

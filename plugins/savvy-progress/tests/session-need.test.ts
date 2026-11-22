@@ -44,6 +44,7 @@ const READER: Plugin = {
   name: 'reader',
   register(on) {
     on('prompt.submit', async ($, e, next) => {
+      if (e.text === 'read flow') $.ui.toast(`need:${JSON.stringify(await $.state.get({ plugin: 'savvy-progress', key: 'flow' } as never))}`)
       if (e.text === 'read need') $.ui.toast(`need:${JSON.stringify(await $.state.get({ plugin: 'savvy-progress', key: 'need' } as never))}`)
       return next(e)
     })
@@ -51,6 +52,11 @@ const READER: Plugin = {
 }
 const needOf = async ($: $T) => {
   await $.prompt.submit({ text: 'read need', origin: { kind: 'task-notification' }, wait: false } as never)
+  return seen
+}
+
+const flowOf = async ($: $T) => {
+  await $.prompt.submit({ text: 'read flow', origin: { kind: 'task-notification' }, wait: false } as never)
   return seen
 }
 
@@ -178,4 +184,39 @@ test('ask: with no flow and no agents the band counts the need and the pane lead
   await dialog.answer()
   expect(await drawn($, 'AbovePrompt', 'desktop')).not.toContain('needs attention')
   expect(await drawn($, 'Pane', 'terminal')).not.toContain('Needs input')
+})
+
+for (const mode of ['ask', 'tool', 'both'] as const)
+  test(`${mode}: the progress schema ${mode === 'ask' ? 'is the default one' : 'gains only blocked'}`, { options: { sessionNeed: mode } }, async ($, on) => {
+    const reg = await registrations($, on)
+    if (mode === 'ask') return expect(reg).toBe(unaskedReg)
+    expect(reg).toContain('"blocked":{"type":"string","description":"The question you are waiting on the user for; an empty string clears it"}')
+    const stripped = reg.replace(/,"blocked":\{"type":"string","description":"The question you are waiting on the user for; an empty string clears it"\}/, '')
+    expect(stripped).toBe(unaskedReg)
+  })
+
+for (const mode of ['tool', 'both'] as const)
+  test(`${mode}: progress with only blocked sets the need and leaves the flow null; blocked "" clears`, { options: { sessionNeed: mode }, plugins: [READER] }, async ($, on) => {
+    host(on)
+    await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: ' Which\n port? ' } as never)
+    expect(await needOf($)).toEqual({ text: 'Which port?', since: expect.any(Number), source: 'tool' })
+    expect(await flowOf($)).toBe(null)
+    expect(await drawn($, 'AbovePrompt', 'desktop')).not.toContain('savvy-flow')
+    await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: '' } as never)
+    expect(await needOf($)).toBe(null)
+  })
+
+test("tool: a subagent's blocked is ignored", { options: { sessionNeed: 'tool' }, plugins: [READER] }, async ($, on) => {
+    host(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: 'q?', agentId: 'w1' } as never)
+  expect(await needOf($)).toBe(null)
+})
+
+test('both: ask and tool set the need together', { options: { sessionNeed: 'both' }, plugins: [READER] }, async ($, on) => {
+  const h = host(on)
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: 'from tool' } as never)
+  expect(await needOf($)).toMatchObject({ text: 'from tool', source: 'tool' })
+  const dialog = await h.ask($.tool.call(ASK as never))
+  expect(await needOf($)).toMatchObject({ text: 'Which database?', source: 'ask' })
+  await dialog.answer()
 })
