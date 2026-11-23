@@ -705,9 +705,12 @@ const globToRegExp = (glob: string): RegExp => {
   const body = glob.replace(/\*\*\/|\*\*|[*?]|[.+^$|()[\]{}\\]/g, t => GLOB_PART[t] ?? `\\${t}`)
   return new RegExp(`^${body}$`)
 }
-// shortcut: only a leading '/' counts as absolute and relative globs join with '/'; extend it if Windows paths are to be watched.
-const globPath = (glob: string, cwd: string): string =>
-  glob.startsWith('/') ? glob : cwd ? `${cwd.replace(/\/$/, '')}/${glob.replace(/^\.\//, '')}` : ''
+// Paths and globs are matched with '/' separators; a drive letter or a leading separator makes one absolute.
+const slashed = (p: string): string => p.replace(/\\/g, '/')
+const globPath = (glob: string, cwd: string): string => {
+  const g = slashed(glob)
+  return /^(?:[A-Za-z]:)?\//.test(g) ? g : cwd ? `${slashed(cwd).replace(/\/$/, '')}/${g.replace(/^\.\//, '')}` : ''
+}
 // The first watch entry the path matches, -1 for none: earlier entries outrank later ones.
 const watchRank = (path: string, cwd: string): number =>
   watch.findIndex(g => {
@@ -804,11 +807,13 @@ const sessionCwd = async ($: EngineInterface): Promise<string> => {
     return ''
   }
 }
-async function readWatched($: EngineInterface, path: string): Promise<void> {
+// The file is read at the path as given; it is matched, named and kept as `source` with '/' separators.
+async function readWatched($: EngineInterface, file: string): Promise<void> {
   const cwd = await sessionCwd($)
+  const path = slashed(file)
   const rank = watchRank(path, cwd)
   if (rank < 0) return
-  const text = String(await $.fs.read(path))
+  const text = String(await $.fs.read(file))
   const parsed = parseChecklist(text, path) ?? (statusWords.size ? parseStatusMap(text, path) : null)
   if (parsed) await update($, flow, prev => (isTakenBy(prev, path, rank, cwd) ? fileFlow(prev, parsed, path) : prev))
 }

@@ -19,13 +19,15 @@ const host = (on: OnT, files: Record<string, string>, cwd: string | null = '/w')
   const reads: string[] = []
   const probes: string[] = []
   const cwds: string[] = []
+  // On a POSIX test host the engine resolves a Windows path against the plugin's directory: the file is its tail.
+  const fileOf = (path: string) => (path in files ? path : (Object.keys(files).find(k => path.endsWith(`/${k}`)) ?? path))
   on('fs.read', (_$, e) => {
-    reads.push(e.path)
-    const text = files[e.path]
+    reads.push(fileOf(e.path))
+    const text = files[fileOf(e.path)]
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
   })
-  on('fs.exists', (_$, e) => (probes.push(e.path), { value: e.path in files }))
+  on('fs.exists', (_$, e) => (probes.push(fileOf(e.path)), { value: fileOf(e.path) in files }))
   on('session.cwd', () => {
     cwds.push('cwd')
     if (cwd === null) throw new Error('no session directory')
@@ -215,6 +217,26 @@ test('without a session directory relative patterns match nothing', { options: {
   expect(h.reads).toEqual([])
   await edit($, '/w/abs.md')
   expect(await band($)).toBe('Release prep: Tasks 1/3, 33%')
+})
+
+test('Windows paths: drive, UNC and relative globs match backslash paths', { options: { watch: ['docs/plan.md', 'D:\\notes\\*.md', '\\\\srv\\share\\**\\todo.md'] }, plugins: [READER] }, async ($, on) => {
+  const box = '- [ ] x\n'
+  const h = host(on, { 'C:\\w\\docs\\plan.md': PLAN_MD, 'C:\\w\\docs\\other.md': box, 'D:\\notes\\a.md': box, 'D:\\notes\\sub\\b.md': box, '\\\\srv\\share\\x\\y\\todo.md': box }, 'C:\\w')
+  for (const p of ['C:\\w\\docs\\other.md', 'D:\\notes\\sub\\b.md']) await edit($, p)
+  expect(h.reads).toEqual([])
+  await edit($, 'C:\\w\\docs\\plan.md')
+  expect(await atomOf($, 'flow')).toMatchObject({ title: 'Release prep', total: 3, done: 1, source: 'C:/w/docs/plan.md' })
+  for (const p of ['D:\\notes\\a.md', '\\\\srv\\share\\x\\y\\todo.md']) await edit($, p)
+  expect(h.reads).toEqual(['C:\\w\\docs\\plan.md', 'D:\\notes\\a.md', '\\\\srv\\share\\x\\y\\todo.md'])
+})
+
+test('Windows paths: a file read at session start is the same file a later backslash edit updates', { options: { watch: ['docs/plan.md'] }, plugins: [READER] }, async ($, on) => {
+  const h = host(on, { 'C:/w/docs/plan.md': PLAN_MD, 'C:\\w\\docs\\plan.md': PLAN_MD.replace('[ ] api', '[x] api') }, 'C:\\w')
+  await start($, on)
+  expect(h.probes).toEqual(['C:/w/docs/plan.md'])
+  expect(await band($)).toBe('Release prep: Tasks 1/3, 33%')
+  await edit($, 'C:\\w\\docs\\plan.md')
+  expect(await band($)).toBe('Release prep: Tasks 2/3, 67%')
 })
 
 test('an empty watch list registers nothing: no read, no probe, no flow', { plugins: [READER] }, async ($, on) => {
