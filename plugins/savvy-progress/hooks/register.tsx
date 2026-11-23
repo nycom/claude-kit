@@ -1919,11 +1919,14 @@ export const register: Register = (on, options) => {
     // Bookkeeping after the hooks have run: a failure here must not fail the stop. Only a
     // recurring cron's next run moves (a wakeup's or a one-shot's is fixed when it is set), and
     // only once it has passed, or when the row has no time yet or is new.
-    const sync = async (at: number) => {
+    const sync = async (before: number) => {
       const rows = await read($, background)
       const row = (id: string) => rows.find(t => t.id === id && t.kind === 'cron' && isActive(t))
-      const isStale = (c: { id: string; recurring: boolean }) => c.recurring && (row(c.id)?.nextAt ?? 0) <= at
-      return reconcile(at, crons.some(isStale) ? await cronTimes($) : new Map())
+      const isStale = (c: { id: string; recurring: boolean }) => c.recurring && (row(c.id)?.nextAt ?? 0) <= before
+      if (!crons.some(isStale)) return reconcile(before, new Map())
+      const times = await cronTimes($)
+      // The engine clamps an unfired job to its own now, so the "still due" check needs a clock read after the call.
+      return reconcile(await $.clock.now(), times)
     }
     await $.clock.now().then(sync).catch(() => undefined)
     return result

@@ -25,7 +25,8 @@ const setup = (on: OnT, toasts: string[] = [], opens: string[] = [], calls: Reco
   on('tool.call', { tool: 'CronList' }, () => {
     listCalls++
     if (listed === 'throw') throw new Error('engine down')
-    if (listed === 'error') return { result: 'boom', isError: true } as never
+    // An error that still carries jobs: their times must not be taken.
+    if (listed === 'error') return { result: { jobs: [{ id: 'c1', nextFireAt: T0 + 999_999 }] }, isError: true } as never
     return (listed === null ? { deny: 'not allowed' } : { result: { jobs: listed } }) as never
   })
   on('tool.call', { tool: 'ScheduleWakeup' }, (_$, e) =>
