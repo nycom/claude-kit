@@ -645,6 +645,8 @@ type Stage = { phase: Phase; isDone: boolean; isFinish: boolean }
 let stages: Record<string, Stage> = {}
 let stageEntries: string[] = []
 let stageIgnored: string[] = []
+// The manifest's default words, for an option that is not a list.
+const DEFAULT_STAGES = ['implement=delegate', 'review=review', 'fix=review', 'validate=review', 'recheck=review', 'merge=close+done', 'docs=close+finish']
 const parseStages = (list: readonly string[]): void => {
   const table = new Map<string, Stage & { entry: string }>()
   const ignored: string[] = []
@@ -699,7 +701,7 @@ const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
 // Plan files: the option `watch` lists globs of files whose checkboxes, after a main-session Edit or Write,
 // are the flow; with `statusWords` a file with none may be a `key: status` map instead. A relative glob is
 // the session directory's, and matches nothing when the engine gives none.
-type Parsed = { title: string; tasks: { title: string; isDone: boolean }[]; phase?: Phase }
+type Parsed = { title: string; tasks: { title: string; isDone: boolean }[]; phase?: Phase; isCut?: boolean }
 let watch: string[] = []
 let statusWords = new Map<string, 'done' | 'skip' | Phase>()
 const GLOB_PART: Record<string, string> = { '**/': '(?:.*/)?', '**': '.*', '*': '[^/]*', '?': '[^/]' }
@@ -726,12 +728,12 @@ const BOX = /^(\s*)[-*+] \[( |x|X)\] (.+)$/
 const parseChecklist = (text: string, path: string): Parsed | null => {
   const boxes = text.split(/\r?\n/).map(l => BOX.exec(l)).filter((m): m is RegExpExecArray => m !== null)
   const indent = Math.min(...boxes.map(m => m[1]?.length ?? 0))
-  const tasks = boxes
+  const all = boxes
     .filter(m => m[1]?.length === indent)
     .map(m => ({ title: clip(oneLine(m[3]), MAX_TITLE), isDone: m[2] !== ' ' }))
     .filter(t => t.title)
-    .slice(0, MAX_TASKS)
-  return tasks.length ? { title: fileTitle(text, path), tasks } : null
+  const tasks = all.slice(0, MAX_TASKS)
+  return tasks.length ? { title: fileTitle(text, path), tasks, isCut: all.length > MAX_TASKS } : null
 }
 
 const parseStatusWords = (list: readonly string[]): Map<string, 'done' | 'skip' | Phase> => {
@@ -770,7 +772,7 @@ const parseStatusMap = (text: string, path: string): Parsed | null => {
       if (to && to !== 'done' && (!phase || PHASES.indexOf(to) > PHASES.indexOf(phase))) phase = to
     }
   }
-  return tasks.length ? { title: fileTitle(text, path), tasks: tasks.slice(0, MAX_TASKS), phase } : null
+  return tasks.length ? { title: fileTitle(text, path), tasks: tasks.slice(0, MAX_TASKS), phase, isCut: tasks.length > MAX_TASKS } : null
 }
 
 // A read of the same file carries its flow on: done never drops, the phase only moves forward until the file
@@ -781,7 +783,7 @@ const fileFlow = (prev: Flow | null, parsed: Parsed, path: string): Flow => {
   const total = parsed.tasks.length
   const doneTitles = [...new Set([...(same?.doneTitles ?? []), ...checked])]
   const done = Math.min(total, Math.max(same?.done ?? 0, checked.length))
-  const isFinished = checked.length === total
+  const isFinished = checked.length === total && !parsed.isCut
   const found: Phase = isFinished ? 'close' : (parsed.phase ?? (done ? 'delegate' : 'plan'))
   const was = same && !same.isFinished ? same.phase : 'plan'
   return {
@@ -1551,14 +1553,13 @@ async function autoOpen($: EngineInterface, key: string): Promise<void> {
 
 export const register: Register = (on, options) => {
   showCost = options.showCost !== false
-  parseStages(Array.isArray(options.stages) ? options.stages : [])
+  parseStages(Array.isArray(options.stages) ? options.stages : DEFAULT_STAGES)
   watch = (Array.isArray(options.watch) ? options.watch : []).map(String).filter(g => g.trim())
   statusWords = parseStatusWords(Array.isArray(options.statusWords) ? options.statusWords : [])
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     lang = await detectLang($, options.language)
     await update($, stagesAtom, () => stageEntries)
-    if (stageIgnored.length) $.ui.toast(`savvy-progress: ignored stage entry ${stageIgnored.join(', ')}`)
     await $.tool.register({
       name: 'progress',
       description:
@@ -1628,6 +1629,7 @@ export const register: Register = (on, options) => {
       name: 'agents-info',
       description: 'Show or hide the panel of subagents: running, finished and planned, with model, context, cost and time',
     })
+    if (stageIgnored.length) $.ui.toast(`savvy-progress: ignored stage entry ${stageIgnored.join(', ')}`)
 
     await retick($)
     themePath = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`

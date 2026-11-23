@@ -161,6 +161,12 @@ test('titles are cut to 120 characters and at most 200 tasks are kept', { option
   expect((f?.tasks as { title: string }[])[0]?.title).toBe(`${'t'.repeat(119)}…`)
 })
 
+test('a list cut at 200 tasks never reads finished', { options: { watch: ['docs/plan.md'] }, plugins: [READER] }, async ($, on) => {
+  host(on, { '/w/docs/plan.md': Array.from({ length: 250 }, (_, i) => `- [${i < 200 ? 'x' : ' '}] task ${i}`).join('\n') })
+  await edit($, '/w/docs/plan.md')
+  expect(await atomOf($, 'flow')).toMatchObject({ total: 200, done: 200, isFinished: false })
+})
+
 test('all checked finishes the flow, a new unchecked box reopens it', { options: { watch: ['docs/plan.md'] }, plugins: [READER] }, async ($, on) => {
   const h = host(on, { '/w/docs/plan.md': PLAN_MD.replaceAll('[ ]', '[x]') })
   await edit($, '/w/docs/plan.md')

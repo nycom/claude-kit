@@ -101,3 +101,28 @@ test('the default list is published as the stages atom', async ($, on) => {
     'implement=delegate', 'review=review', 'fix=review', 'validate=review', 'recheck=review', 'merge=close+done', 'docs=close+finish',
   ])
 })
+
+test('a stages option that is not a list uses the default words', { options: { stages: 'review=review' as never } }, async ($, on) => {
+  setup(on)
+  await plan($)
+  await spawn($, 'a review')
+  expect(await band($)).toBe('Ship it: Review 0/2, 0%')
+})
+
+test('the ignored-stage toast failing does not skip the registrations', { options: { stages: ['oops'] } }, async ($, on) => {
+  setup(on)
+  mock.env(on, { HOME: '/home/k' })
+  on('fs.stat', () => { throw new Error('ENOENT') })
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  const registered: string[] = []
+  on('tool.register', (_$, e) => (registered.push((e as { name: string }).name), { value: undefined }))
+  on('command.register', (_$, e) => (registered.push((e as { name: string }).name), { value: undefined }))
+  const out: string[] = []
+  on('ui.toast', (_$, e) => {
+    out.push(e.text)
+    throw new Error('toast down')
+  })
+  await start($).catch(() => undefined)
+  expect(out.filter(t => t.includes('ignored stage entry oops'))).toHaveLength(1)
+  expect(registered).toContain('progress')
+})

@@ -97,7 +97,7 @@ While the skins mod has a dark skin on, its theme wins over the file, and a `/sk
 `language`: `auto` (default), `en` or `ru`. `auto` follows Claude Code's `language` setting, then the system locale, and falls back to English. Set it in `/config`, or, for a mod loaded by hand, in `~/.claude/settings.json`:
 
 ```json
-{ "pluginConfigs": { "savvy-progress": { "options": { "language": "ru" } } } }
+{ "pluginConfigs": { "savvy-progress@claude-kit": { "options": { "language": "ru" } } } }
 ```
 
 `autoOpen`: `any` (default) or `savvy`. With `any` the panel opens by itself, once per flow, when any subagent starts or a plan is reported. With `savvy` only a `savvy-*` worker or a plan opens it. While clawpit has taken over, neither opens it. `/agents-info` toggles it either way.
@@ -110,10 +110,10 @@ While the skins mod has a dark skin on, its theme wins over the file, and a `/sk
 
 `statusWords`: string list, default `[]`, of `word=done`, `word=skip` or `word=<phase>` entries. When a watched file has no checkboxes, a block of `key: word` lines in which one word is configured becomes the tasks: each key is a task, `done` ticks it, `skip` leaves it out, and the furthest phase mapped by a task that is not done sets the phase (forward only). Empty: that shape is never read. Both options add no model tokens.
 
-On Claude Code 2.1.314 the list settings (`stages`, `watch`, `statusWords`) do not show as rows in `/config`. Set them in `settings.json` under `pluginConfigs`, keyed by the plugin name:
+On Claude Code 2.1.314 the list settings (`stages`, `watch`, `statusWords`) may not show as rows in `/config` (2.1.314 does not draw list settings). Set them in `settings.json` under `pluginConfigs`. An installed plugin's key is `<name>@<marketplace>`; the bare name `savvy-progress` (or `savvy-progress@inline`) applies only to a plugin loaded from a folder with `--plugin-dir`:
 
 ```json
-{ "pluginConfigs": { "savvy-progress": { "options": { "watch": ["docs/plan.md"], "statusWords": ["finished=done"] } } } }
+{ "pluginConfigs": { "savvy-progress@claude-kit": { "options": { "watch": ["docs/plan.md"], "statusWords": ["finished=done"] } } } }
 ```
 
 Install instructions are in the [repository README](../../README.md).
