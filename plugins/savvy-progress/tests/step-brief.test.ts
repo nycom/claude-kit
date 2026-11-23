@@ -89,3 +89,10 @@ test('stepBrief flow: only a spawn that names a task of the unfinished flow is b
   await go($)
   expect(prompts).toEqual(['P', `P${ANY}`, `P${ANY}`, 'P', 'P', 'P', `P ${TOOL}`, `P${SAVVY}`, 'P'])
 })
+
+test('a stepBrief value other than flow behaves as savvy through the hook', { options: { stepBrief: 'x' } }, async ($, on) => {
+  const prompts = capture(on)
+  await plan($)
+  await go($)
+  expect(prompts).toEqual(['P'])
+})
