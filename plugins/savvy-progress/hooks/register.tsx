@@ -32,6 +32,11 @@ const STEP_TOOL = 'mcp__savvy-progress__step'
 const STEP_BRIEF = `
 
 Progress reporting: before any other work, call \`${STEP_TOOL}\` with \`total\` (your plan in 3-8 steps) and \`done: 0\`; call it again with \`done\` and a few-word \`note\` as each step finishes. It only draws a progress bar. When an attempt fails, call it with failed: true, reason (one sentence) and error (the exact error line).`
+// stepBrief 'flow': the brief for any other type whose label names a planned task. Conditional, since a type
+// with a `tools:` list cannot call the step tool; and a result it was asked for (findings, a red gate) is not a failure.
+const STEP_BRIEF_ANY = `
+
+Progress reporting (optional): if \`${STEP_TOOL}\` is in your tool list, call it before other work with \`total\` (your plan in 3-8 steps) and \`done: 0\`, then again with \`done\` and a few-word \`note\` as each step finishes; it only draws a progress bar. If it is not in your tool list, ignore this paragraph and do not mention it. Use \`failed: true\` (with \`reason\` and \`error\`) only when your own attempt at the task failed and you could not complete it. A result you were asked to produce (review findings, a gate you were told to run that came back red, a failing test you were told to report) is not a failure: put it in your answer.`
 const PANE = 'savvy-agents'
 const PHASES: readonly Phase[] = ['plan', 'design', 'delegate', 'review', 'close']
 const TIERS: readonly string[] = ['fable', 'heavy', 'careful', 'medium', 'light']
@@ -635,6 +640,16 @@ type Planned = PlannedTask & { n: number }
 const titleOf = (titles: string[], description: string): string | undefined => {
   const d = norm(description)
   return titles.map(norm).filter(t => d === t || d.startsWith(`${t} `)).sort((a, b) => b.length - a.length)[0]
+}
+
+// What a spawn's prompt gets appended: savvy-* workers keep today's rule in every mode; under stepBrief
+// 'flow', a fresh agent whose label names a task of the unfinished flow gets the conditional brief.
+type SpawnLike = { subagentType: string; prompt: string; description: string; resume?: unknown; fork?: boolean; isTeammate?: boolean }
+export const briefFor = (e: SpawnLike, f: Flow | null, mode: unknown): string => {
+  if (e.prompt.includes(STEP_TOOL)) return ''
+  if (e.subagentType.startsWith('savvy-')) return STEP_BRIEF
+  if (mode !== 'flow' || e.resume || e.fork || e.isTeammate || !f || f.isFinished || !f.tasks?.length) return ''
+  return titleOf(f.tasks.map(t => t.title), e.description) ? STEP_BRIEF_ANY : ''
 }
 
 // Labels move the bar on their own: "<task> <word> ...". The words come from the `stages` option, entries
@@ -1878,8 +1893,9 @@ export const register: Register = (on, options) => {
 
   on('agent.spawn', async ($, e, next) => {
     await boot($).catch(() => undefined)
-    const isUnbriefed = e.subagentType.startsWith('savvy-') && !e.prompt.includes(STEP_TOOL)
-    const started = await next(isUnbriefed ? { ...e, prompt: e.prompt + STEP_BRIEF } : e)
+    // At the default no flow is read: the spawn path stays as it was.
+    const brief = briefFor(e, options.stepBrief === 'flow' ? await read($, flow).catch(() => null) : null, options.stepBrief)
+    const started = await next(brief ? { ...e, prompt: e.prompt + brief } : e)
     if (started.deny !== undefined) return started
 
     const at = await $.clock.now()
