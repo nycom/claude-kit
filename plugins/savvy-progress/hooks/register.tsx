@@ -270,7 +270,7 @@ const STRINGS = {
   },
 } as const
 
-// Module scope is fine here: session.start sets it again on every (re)load.
+// Module scope is fine here: boot sets it again on every load and session.
 let lang: Lang = 'en'
 // The option showCost: false leaves the estimate out of what savvy draws (the cost is still tracked).
 let showCost = true
@@ -1551,97 +1551,119 @@ async function autoOpen($: EngineInterface, key: string): Promise<void> {
   void $.ui.open({ id: PANE, title: tr().pane })
 }
 
+// Once per load and session: a reload inside a running session fires no session.start, so the
+// next prompt, spawn, /agents-info or savvy tool call runs this there, with the options of the new
+// load. A reload in the middle of a turn keeps the old schema until one of them runs.
+let booted: Promise<void> | null = null
+let bootOptions: Record<string, unknown> = {}
+// A failed boot is forgotten, so the next hook tries again; a newer boot is left in place.
+const boot = ($: EngineInterface): Promise<void> => {
+  const mine: Promise<void> = (booted ??= startUp($).catch((err: unknown) => {
+    if (booted === mine) booted = null
+    throw err
+  }))
+  return mine
+}
+async function startUp($: EngineInterface): Promise<void> {
+  lang = await detectLang($, bootOptions.language)
+  await update($, stagesAtom, () => stageEntries)
+  await $.tool.register({
+    name: 'progress',
+    description:
+      'Report /savvy-flow progress to the progress bar above the prompt and the agents panel. ' +
+      'Call it after presenting the plan (title, total, tasks, phase "delegate"), each time a task is accepted (done), ' +
+      'when switching phase or re-planning (tasks), and once at the end with finished: true. Fields left out keep their previous value. ' +
+      'For the main session only: a call from a subagent is ignored (workers report with `step`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short name of the overall task, a few words.' },
+        total: { type: 'integer', minimum: 0, description: 'Number of planned worker tasks.' },
+        done: { type: 'integer', minimum: 0, description: 'Number of tasks accepted after review.' },
+        phase: { type: 'string', enum: [...PHASES] },
+        finished: { type: 'boolean', description: 'True once the flow is closed.' },
+        tasks: {
+          type: 'array',
+          description:
+            'The planned worker tasks in order, numbered from 1. Each title must equal the Agent tool `description` the task will be delegated with, or start it, so the panel can match runs to tasks.',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'A few words; reused verbatim as the Agent description.' },
+              tier: { type: 'string', enum: [...TIERS] },
+              after: { type: 'array', items: { type: 'integer' }, description: 'Numbers of the tasks this one waits for.' },
+            },
+            required: ['title', 'tier'],
+          },
+        },
+        ...(bootOptions.sessionNeed === 'tool' || bootOptions.sessionNeed === 'both'
+          ? { blocked: { type: 'string', description: 'The question you are waiting on the user for; an empty string clears it' } }
+          : {}),
+      },
+    },
+  })
+  await $.tool.register({
+    name: 'step',
+    description:
+      'For subagents: report progress on your own task to the agents panel. ' +
+      'Right after reading the brief, call it with `total` (your plan in 3-8 steps) and `done: 0`; ' +
+      'call it again as each step finishes. Cheap and silent: it only draws a bar, unless you flag `failed` or `blocked`. When an attempt fails, call it with failed: true, reason (one sentence) and error (the exact error line).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        done: { type: 'integer', minimum: 0, description: 'Steps finished so far.' },
+        total: { type: 'integer', minimum: 1, description: 'Steps planned; may change if the plan changes.' },
+        note: { type: 'string', description: 'The step in progress, a few words.' },
+        failed: {
+          type: 'boolean',
+          description:
+            'Set true when an attempt at your task failed (test gate red, fix rejected, build broken). Each call with failed:true counts one failed attempt.',
+        },
+        reason: { type: 'string', description: 'With failed: why this attempt failed, one sentence.' },
+        error: { type: 'string', description: 'With failed: the exact error line, copied verbatim.' },
+        blocked: {
+          type: 'string',
+          description:
+            'The question you need answered before you can continue. Set it when you need assistance; your next step call without it clears it.',
+        },
+      },
+      required: ['done'],
+    },
+    // In every agent's tool list, not behind ToolSearch: workers do not go looking for it.
+    isDeferred: false,
+  })
+  await $.command.register({
+    name: 'agents-info',
+    description: 'Show or hide the panel of subagents: running, finished and planned, with model, context, cost and time',
+  })
+  if (stageIgnored.length) $.ui.toast(`savvy-progress: ignored stage entry ${stageIgnored.join(', ')}`)
+
+  await retick($)
+  themePath = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`
+  themePoll?.cancel()
+  themeEvery = 0
+  themeMtime = 0
+  await loadTheme($)
+  if (watch.length) await readLiterals($).catch(() => undefined)
+}
+
 export const register: Register = (on, options) => {
+  bootOptions = options
+  booted = null
   showCost = options.showCost !== false
   parseStages(Array.isArray(options.stages) ? options.stages : DEFAULT_STAGES)
   watch = (Array.isArray(options.watch) ? options.watch : []).map(String).filter(g => g.trim())
   statusWords = parseStatusWords(Array.isArray(options.statusWords) ? options.statusWords : [])
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    lang = await detectLang($, options.language)
-    await update($, stagesAtom, () => stageEntries)
-    await $.tool.register({
-      name: 'progress',
-      description:
-        'Report /savvy-flow progress to the progress bar above the prompt and the agents panel. ' +
-        'Call it after presenting the plan (title, total, tasks, phase "delegate"), each time a task is accepted (done), ' +
-        'when switching phase or re-planning (tasks), and once at the end with finished: true. Fields left out keep their previous value. ' +
-        'For the main session only: a call from a subagent is ignored (workers report with `step`).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Short name of the overall task, a few words.' },
-          total: { type: 'integer', minimum: 0, description: 'Number of planned worker tasks.' },
-          done: { type: 'integer', minimum: 0, description: 'Number of tasks accepted after review.' },
-          phase: { type: 'string', enum: [...PHASES] },
-          finished: { type: 'boolean', description: 'True once the flow is closed.' },
-          tasks: {
-            type: 'array',
-            description:
-              'The planned worker tasks in order, numbered from 1. Each title must equal the Agent tool `description` the task will be delegated with, or start it, so the panel can match runs to tasks.',
-            items: {
-              type: 'object',
-              properties: {
-                title: { type: 'string', description: 'A few words; reused verbatim as the Agent description.' },
-                tier: { type: 'string', enum: [...TIERS] },
-                after: { type: 'array', items: { type: 'integer' }, description: 'Numbers of the tasks this one waits for.' },
-              },
-              required: ['title', 'tier'],
-            },
-          },
-          ...(options.sessionNeed === 'tool' || options.sessionNeed === 'both'
-            ? { blocked: { type: 'string', description: 'The question you are waiting on the user for; an empty string clears it' } }
-            : {}),
-        },
-      },
-    })
-    await $.tool.register({
-      name: 'step',
-      description:
-        'For subagents: report progress on your own task to the agents panel. ' +
-        'Right after reading the brief, call it with `total` (your plan in 3-8 steps) and `done: 0`; ' +
-        'call it again as each step finishes. Cheap and silent: it only draws a bar, unless you flag `failed` or `blocked`. When an attempt fails, call it with failed: true, reason (one sentence) and error (the exact error line).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          done: { type: 'integer', minimum: 0, description: 'Steps finished so far.' },
-          total: { type: 'integer', minimum: 1, description: 'Steps planned; may change if the plan changes.' },
-          note: { type: 'string', description: 'The step in progress, a few words.' },
-          failed: {
-            type: 'boolean',
-            description:
-              'Set true when an attempt at your task failed (test gate red, fix rejected, build broken). Each call with failed:true counts one failed attempt.',
-          },
-          reason: { type: 'string', description: 'With failed: why this attempt failed, one sentence.' },
-          error: { type: 'string', description: 'With failed: the exact error line, copied verbatim.' },
-          blocked: {
-            type: 'string',
-            description:
-              'The question you need answered before you can continue. Set it when you need assistance; your next step call without it clears it.',
-          },
-        },
-        required: ['done'],
-      },
-      // In every agent's tool list, not behind ToolSearch: workers do not go looking for it.
-      isDeferred: false,
-    })
-    await $.command.register({
-      name: 'agents-info',
-      description: 'Show or hide the panel of subagents: running, finished and planned, with model, context, cost and time',
-    })
-    if (stageIgnored.length) $.ui.toast(`savvy-progress: ignored stage entry ${stageIgnored.join(', ')}`)
-
-    await retick($)
-    themePath = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`
-    themePoll?.cancel()
-    themeEvery = 0
-    themeMtime = 0
-    await loadTheme($)
-    if (watch.length) await readLiterals($).catch(() => undefined)
+    booted = null
+    await boot($)
     return started
   })
 
   on('command.run', { command: 'agents-info' }, async ($, e) => {
+    await boot($).catch(() => undefined)
     // `/agents-info open` opens the panel, or brings it forward from behind another tab, without toggling it.
     if ((e.args ?? '').trim() === 'open') {
       const at = await $.clock.now()
@@ -1654,6 +1676,7 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
+    await boot($).catch(() => undefined)
     // The flow is the main session's: a call from a worker's loop carries its agentId
     // and changes nothing, or any subagent could rename, finish or reset the flow.
     if (e.agentId) return { result: 'ignored: only the main session reports the flow' }
@@ -1681,6 +1704,7 @@ export const register: Register = (on, options) => {
 
   // A worker's own progress: the call runs in the worker's loop, so agentId names it.
   on('tool.call', { tool: STEP_TOOL }, async ($, e) => {
+    await boot($).catch(() => undefined)
     const input = e as unknown as { done?: number; total?: number; note?: string; failed?: boolean; blocked?: string; reason?: string; error?: string }
     const agentId = e.agentId
     if (!agentId) return { result: 'ignored: only subagents report steps' }
@@ -1787,6 +1811,7 @@ export const register: Register = (on, options) => {
 
   // A background task's notification ends it: `<task-id>` and `<status>` in its text.
   on('prompt.submit', async ($, e, next) => {
+    await boot($).catch(() => undefined)
     // The user's own next prompt (typed, or from the phone) ends the finish moment: held runs move to
     // Ended, which folds once nothing runs. Notifications, schedules and peers never do.
     if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') {
@@ -1852,6 +1877,7 @@ export const register: Register = (on, options) => {
   })
 
   on('agent.spawn', async ($, e, next) => {
+    await boot($).catch(() => undefined)
     const isUnbriefed = e.subagentType.startsWith('savvy-') && !e.prompt.includes(STEP_TOOL)
     const started = await next(isUnbriefed ? { ...e, prompt: e.prompt + STEP_BRIEF } : e)
     if (started.deny !== undefined) return started
