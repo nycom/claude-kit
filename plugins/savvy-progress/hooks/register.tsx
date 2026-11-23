@@ -3,6 +3,8 @@ import type { EngineInterface, HookFailure, Register, RenderElement } from 'clau
 
 import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask, SessionNeed } from '../types'
 import type { ControlProps } from './controls'
+import { DEMO_LENGTH, DEMO_PREFIX, DEMO_QUESTIONS, demoFrame } from './demo'
+import type { DemoStyle } from './demo'
 import type { MarkProps } from './mark'
 
 const flow = atom({ plugin: 'savvy-progress', key: 'flow' } as const, null)
@@ -201,6 +203,11 @@ const STRINGS = {
     isFinished: 'finished',
     isPlanned: 'planned',
     opened: 'Agents panel opened.',
+    demoStarted: (s: number, hasX: boolean) => `Demo started: ${s} seconds. Stop it with /agents-info demo stop${hasX ? " or the band's ✕" : ''}.`,
+    demoStopped: 'Demo stopped; the panel is back to what it showed before.',
+    demoIdle: 'No demo is running.',
+    demoBusy: 'Agents are running; run the demo again once they end.',
+    demoFinished: 'Demo flow finished',
     closed: 'Agents panel closed.',
     done: 'Done',
     plan: 'Plan',
@@ -246,6 +253,11 @@ const STRINGS = {
     isFinished: 'завершён',
     isPlanned: 'запланирована',
     opened: 'Панель агентов открыта.',
+    demoStarted: (s: number, hasX: boolean) => `Демо запущено: ${s} секунд. Остановить: /agents-info demo stop${hasX ? ' или ✕ на полосе' : ''}.`,
+    demoStopped: 'Демо остановлено; панель вернулась к прежнему виду.',
+    demoIdle: 'Демо не запущено.',
+    demoBusy: 'Агенты работают; запустите демо, когда они закончат.',
+    demoFinished: 'Демо-поток завершён',
     closed: 'Панель агентов закрыта.',
     done: 'Готово',
     plan: 'План',
@@ -834,7 +846,7 @@ async function readWatched($: EngineInterface, file: string): Promise<void> {
   if (rank < 0) return
   const text = String(await $.fs.read(file))
   const parsed = parseChecklist(text, path) ?? (statusWords.size ? parseStatusMap(text, path) : null)
-  if (parsed) await update($, flow, prev => (isTakenBy(prev, path, rank, cwd) ? fileFlow(prev, parsed, path) : prev))
+  if (parsed) await updateRealFlow($, prev => (isTakenBy(prev, path, rank, cwd) ? fileFlow(prev, parsed, path) : prev))
 }
 // At session start, so a resumed session shows its plan before the next edit; wildcard globs wait for one.
 async function readLiterals($: EngineInterface): Promise<void> {
@@ -1536,6 +1548,12 @@ const startedTask = (e: Record<string, unknown>, r: Record<string, unknown>): Om
 // One press stops it, no confirmation: TaskStop for a shell or a monitor, CronDelete for a
 // cron, ScheduleWakeup's `stop` for a dynamic /loop. An error is toasted and the row stays.
 async function stopTask($: EngineInterface, t: BackgroundTask): Promise<void> {
+  // A show's row never reaches a real stop, even pressed as the show ends.
+  if (t.id.startsWith(DEMO_PREFIX)) {
+    demo?.stopped.set(t.id, await $.clock.now())
+    await finishTask($, x => x.id === t.id, 'killed')
+    return
+  }
   const consent = `The user pressed Stop on the background ${t.kind} "${clip(bgTitle(t), 80)}" in the Agents panel.`
   const call = t.kind === 'cron' ? { tool: 'CronDelete', id: t.id } : t.kind === 'wakeup' ? { tool: 'ScheduleWakeup', stop: true } : { tool: 'TaskStop', task_id: t.id }
   try {
@@ -1546,6 +1564,114 @@ async function stopTask($: EngineInterface, t: BackgroundTask): Promise<void> {
     return
   }
   await finishTask($, x => x.id === t.id, 'killed')
+}
+
+// --- `/agents-info demo`: plays a scripted flow through the atoms, then puts back what was there.
+type Demo = {
+  style: DemoStyle
+  t0: number
+  last: number
+  timer: { cancel(): void }
+  // The need is not saved: a real one always wins over the show's and is never put back stale.
+  saved: { flow: Flow | null; agents: AgentRun[] }
+  // Rows the user stopped with ■ during the show, with the time of the press.
+  stopped: Map<string, number>
+}
+let demo: Demo | null = null
+// Frames, the stop and real writes that touch what the show replaces run one at a time, so none lands between another's read and write.
+let demoChain: Promise<unknown> = Promise.resolve()
+const inDemo = <T,>(fn: () => Promise<T>): Promise<T> => {
+  const run = demoChain.then(fn)
+  demoChain = run.catch(() => undefined)
+  return run
+}
+// While a show plays the atom holds its flow: a real change goes to the saved flow, which the restore puts back.
+const updateRealFlow = ($: EngineInterface, change: (f: Flow | null) => Flow | null): Promise<void> =>
+  inDemo(async () => {
+    if (demo) demo.saved.flow = change(demo.saved.flow)
+    else await update($, flow, change)
+  })
+const readRealFlow = async ($: EngineInterface): Promise<Flow | null> => (demo ? demo.saved.flow : read($, flow))
+
+async function demoTick($: EngineInterface): Promise<void> {
+  const d = demo
+  if (!d) return
+  const at = await $.clock.now()
+  const s = Math.floor((at - d.t0) / 1000)
+  if (s >= DEMO_LENGTH) return endDemo($)
+  if (s === d.last) return
+  const t = tr()
+  const words = { agent: t.agent, failed: t.toastFailed, input: t.toastInput, finished: t.demoFinished }
+  const f = demoFrame(s, d.t0, words, d.style)
+  // Toasts of every second since the last frame, in order, so a late tick drops none.
+  const earlier: string[] = []
+  for (let k = d.last + 1; k < s; k++) earlier.push(...demoFrame(k, d.t0, words, d.style).toasts)
+  const toasts = [...earlier, ...f.toasts]
+  d.last = s
+  await update($, flow, () => f.flow)
+  await update($, agents, () => f.agents.map(a => withModel(a, a.model)))
+  // Real rows stay in the list beside the show's, so a shell started mid-show survives the restore.
+  await update($, background, list => [
+    ...list.filter(t => !t.id.startsWith(DEMO_PREFIX)),
+    // A row stopped with ■ stays done from the press, whatever the script does with it later.
+    ...f.background.map(t => {
+      const pressed = d.stopped.get(t.id)
+      return pressed === undefined ? t : { ...t, status: 'done' as const, endedAt: pressed }
+    }),
+  ])
+  // A real question (AskUserQuestion, or `progress` blocked) stays up over the show's.
+  await update($, need, n => (n && !isDemoNeed(n) ? n : f.need))
+  await update($, now, () => at)
+  for (const text of toasts) $.ui.toast(text)
+  await retick($)
+}
+
+async function endDemo($: EngineInterface): Promise<void> {
+  const d = demo
+  if (!d) return
+  demo = null
+  d.timer.cancel()
+  await update($, flow, () => d.saved.flow)
+  await update($, agents, () => d.saved.agents)
+  await update($, background, list => list.filter(t => !t.id.startsWith(DEMO_PREFIX)))
+  await update($, need, n => (n && isDemoNeed(n) ? null : n))
+  const at = await $.clock.now()
+  await update($, now, () => at)
+  await retick($)
+}
+
+const isDemoNeed = (n: SessionNeed): boolean => n.source === 'tool' && DEMO_QUESTIONS.includes(n.text)
+
+// False while a real agent runs: its end would land on the show's list and be lost on the restore.
+const startDemo = ($: EngineInterface, style: DemoStyle): Promise<boolean> => {
+  let started = false
+  return inDemo(async () => {
+    await endDemo($)
+    const list = await read($, agents)
+    if (list.some(a => a.status === 'running')) return
+    const t0 = await $.clock.now()
+    demo = {
+      style,
+      t0,
+      last: -1,
+      stopped: new Map(),
+      saved: { flow: await read($, flow), agents: list },
+      timer: $.clock.every(250, () => void inDemo(() => demoTick($))),
+    }
+    started = true
+    await demoTick($)
+    // While clawpit has taken over, its own pane shows the show (it reads these atoms); savvy's stays shut, as auto-open does.
+    if (!(await read($, { plugin: 'clawpit', key: 'takeover' }))) await $.ui.open({ id: PANE, title: tr().pane })
+  }).then(() => started)
+}
+
+// Always through the chain, so a stop that arrives while a start is setting up still lands. True when a show was running.
+const stopDemo = ($: EngineInterface): Promise<boolean> => {
+  let was = false
+  return inDemo(async () => {
+    was = !!demo
+    await endDemo($)
+  }).then(() => was)
 }
 
 const toggleCollapsed = ($: EngineInterface) => update($, panel, prev => ({ ...prev, isDoneCollapsed: !prev.isDoneCollapsed }))
@@ -1690,6 +1816,7 @@ export const register: Register = (on, options) => {
   statusWords = parseStatusWords(Array.isArray(options.statusWords) ? options.statusWords : [])
 
   on('session.start', async ($, e, next) => {
+    await stopDemo($)
     const started = await next(e)
     booted = null
     await boot($)
@@ -1698,8 +1825,16 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'agents-info' }, async ($, e) => {
     await boot($).catch(() => undefined)
+    const args = (e.args ?? '').trim().toLowerCase()
+    // `demo fun`: the same show with sillier labels.
+    if (args === 'demo' || args === 'demo fun') {
+      if (!(await startDemo($, args === 'demo fun' ? 'fun' : 'classic'))) return { text: tr().demoBusy }
+      // Under clawpit's takeover the desktop draws no savvy band, so there is no ✕ to name.
+      return { text: tr().demoStarted(DEMO_LENGTH, !(await read($, { plugin: 'clawpit', key: 'takeover' }))) }
+    }
+    if (args === 'demo stop' || args === 'stop') return { text: (await stopDemo($)) ? tr().demoStopped : tr().demoIdle }
     // `/agents-info open` opens the panel, or brings it forward from behind another tab, without toggling it.
-    if ((e.args ?? '').trim() === 'open') {
+    if (args === 'open') {
       const at = await $.clock.now()
       await update($, now, () => at)
       await $.ui.open({ id: PANE, title: tr().pane })
@@ -1711,6 +1846,8 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
     await boot($).catch(() => undefined)
+    // Real progress ends the demo first, so its flow never mixes with the show's.
+    if (!e.agentId) await stopDemo($)
     // The flow is the main session's: a call from a worker's loop carries its agentId
     // and changes nothing, or any subagent could rename, finish or reset the flow.
     if (e.agentId) return { result: 'ignored: only the main session reports the flow' }
@@ -1805,14 +1942,14 @@ export const register: Register = (on, options) => {
     const type = String(e.subagent_type ?? '')
     if (!type.startsWith('savvy-')) return next(e)
 
-    await update($, flow, prev => {
+    await updateRealFlow($, prev => {
       const base = prev && !prev.isFinished ? { ...blank(), ...prev } : blank()
       return { ...base, running: base.running + 1, phase: base.phase === 'plan' ? 'delegate' : base.phase }
     })
     try {
       return await next(e)
     } finally {
-      await update($, flow, prev => (prev ? { ...prev, running: Math.max(0, prev.running - 1) } : prev))
+      await updateRealFlow($, prev => (prev ? { ...prev, running: Math.max(0, prev.running - 1) } : prev))
     }
   })
 
@@ -1934,13 +2071,16 @@ export const register: Register = (on, options) => {
 
   on('agent.spawn', async ($, e, next) => {
     await boot($).catch(() => undefined)
-    // At the default no flow is read: the spawn path stays as it was.
-    const brief = briefFor(e, options.stepBrief === 'flow' ? await read($, flow).catch(() => null) : null, options.stepBrief)
+    // At the default no flow is read: the spawn path stays as it was. During a show the real flow is the saved one.
+    const brief = briefFor(e, options.stepBrief === 'flow' ? await readRealFlow($).catch(() => null) : null, options.stepBrief)
     const started = await next(brief ? { ...e, prompt: e.prompt + brief } : e)
     if (started.deny !== undefined) return started
-
     const at = await $.clock.now()
-    const spawned = await update($, agents, list => {
+    // A real agent ends the show and is listed in one step, so no show can start in between and save a list without it.
+    // A refused spawn (above) leaves the show playing.
+    const spawned = await inDemo(async () => {
+      await endDemo($)
+      return update($, agents, list => {
       const round = 1 + list.filter(a => norm(a.description) === norm(e.description) && e.description).length
       // A resumed run keeps its model and effort until a request reports new ones.
       const earlier = e.resume ? list.find(a => a.agentId === e.resume?.agentId) : undefined
@@ -1967,6 +2107,7 @@ export const register: Register = (on, options) => {
         earlier,
       )
       return [...list.filter(a => a.id !== run.id), run].slice(-200)
+      })
     })
     await update($, flow, f => autoFlow(f, spawned, spawned.find(a => a.id === (started.agentId ?? e.tool_use_id))))
     await update($, now, () => at)
@@ -2054,7 +2195,7 @@ export const register: Register = (on, options) => {
           return fallback ? withModel(ended, ended.model, a) : ended
         }),
       )
-      if (wasRunning) await update($, flow, f => autoFlow(f, after, after.find(a => a.agentId === agentId)))
+      if (wasRunning) await updateRealFlow($, f => autoFlow(f, after, after.find(a => a.agentId === agentId)))
       await update($, now, () => at)
       await retick($)
     }
@@ -2458,7 +2599,7 @@ export const register: Register = (on, options) => {
         label="✕"
         plain
         role="dismiss"
-        onPress={() => update($, flow, () => null)}
+        onPress={() => (demo ? stopDemo($) : update($, flow, () => null))}
       />
     )
 

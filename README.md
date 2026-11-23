@@ -67,6 +67,28 @@ or for every session (including the desktop app) through `env` in `~/.claude/set
 
 Mods are built on function hooks (`hooks/register.tsx`), an early-access Claude Code API: tested on Claude Code 2.1.286, and it may change between releases. If a mod installed from the marketplace does not show up, load it by hand as above.
 
+## Try it
+
+With savvy-progress loaded, type this in any session to watch the band and the agents panel play a scripted run: every tier and costume, failures, questions, background tasks and a finish. It takes about 46 seconds and makes no model calls:
+
+```
+/agents-info demo
+```
+
+For the same show with sillier labels:
+
+```
+/agents-info demo fun
+```
+
+It ends by itself and puts back what the panel showed before. To stop it sooner, press the band's ✕ or run:
+
+```
+/agents-info demo stop
+```
+
+It won't start while a real agent runs, and a real subagent or `progress` call stops it. Details: [savvy-progress → Demo](plugins/savvy-progress#demo).
+
 ## Layout
 
 ```
