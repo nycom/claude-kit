@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Plugin } from 'claude-code/testing'
 
-import { PROPS, setup } from './drawing'
+import { PROPS, end, setup, spawn } from './drawing'
 import type { $T, OnT } from './drawing'
 
 // plan.md: three top-level tasks, one checked; the indented box is a detail of api.
@@ -124,6 +124,19 @@ test('unchecking a box keeps done', { options: { watch: ['docs/plan.md'] }, plug
   h.files['/w/docs/plan.md'] = PLAN_MD.replace('[x] schema', '[ ] schema').replace('[ ] api', '[x] api')
   await edit($, '/w/docs/plan.md')
   expect((await atomOf($, 'flow'))?.doneTitles).toEqual(['schema', 'api'])
+})
+
+test('an agent that ends cannot lift or finish a file flow', { options: { watch: ['docs/plan.md'] }, plugins: [READER] }, async ($, on) => {
+  const h = host(on, { '/w/docs/plan.md': PLAN_MD })
+  await edit($, '/w/docs/plan.md')
+  h.files['/w/docs/plan.md'] = PLAN_MD.replace('[x] schema', '[ ] schema')
+  await edit($, '/w/docs/plan.md')
+  await spawn($, 'api merge')
+  await end($, 'w1')
+  const flow = await atomOf($, 'flow')
+  expect(flow?.done).toBe(1)
+  expect(flow?.doneTitles).toEqual(['schema'])
+  expect(flow?.isFinished).toBe(false)
 })
 
 test('a file with CRLF line endings builds the same flow', { options: { watch: ['docs/plan.md'] }, plugins: [READER] }, async ($, on) => {

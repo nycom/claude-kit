@@ -36,6 +36,7 @@ test('custom stage words move the phase, tick a task and finish the flow', { opt
   await spawn($, 'a implement') // w2: no longer a stage word
   await end($, 'w1')
   await end($, 'w2')
+  expect(await band($)).toBe('Ship it: Tasks 0/2, 0%')
   await spawn($, 'a integrate') // w3
   await end($, 'w3')
   expect(await band($)).toBe('Ship it: Tasks 1/2, 50%')
@@ -74,6 +75,13 @@ test('a bad entry is skipped and toasted once, a repeated word keeps the last', 
   const text = out.join('\n')
   for (const named of ['oops', 'two words=review', 'x=nowhere', 'build=delegate']) expect(text).toContain(named)
   expect(published).toEqual(['build=review'])
+})
+
+test('spaces around a marker are trimmed', { options: { stages: ['merge = close + done', 'docs=close+finish '] } }, async ($, on) => {
+  setup(on)
+  toasts(on)
+  await start($)
+  expect(published).toEqual(['merge=close+done', 'docs=close+finish'])
 })
 
 test('an empty list moves nothing', { options: { stages: [] } }, async ($, on) => {

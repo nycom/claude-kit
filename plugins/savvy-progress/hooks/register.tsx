@@ -649,7 +649,7 @@ const parseStages = (list: readonly string[]): void => {
   const table = new Map<string, Stage & { entry: string }>()
   const ignored: string[] = []
   for (const raw of list) {
-    const [head = '', ...marks] = String(raw).toLowerCase().split('+')
+    const [head = '', ...marks] = String(raw).toLowerCase().split('+').map(m => m.trim())
     const [w = '', phase = ''] = head.split('=')
     const word = norm(w)
     const stage = { phase: phase.trim() as Phase, isDone: marks.includes('done'), isFinish: marks.includes('finish') }
@@ -678,6 +678,8 @@ const autoFlow = (f: Flow | null, list: AgentRun[], run: AgentRun | undefined): 
     const phase = stages[stageOf(titles, run.description)?.word ?? '']?.phase
     return phase && PHASES.indexOf(phase) > PHASES.indexOf(f.phase) ? { ...f, phase } : f
   }
+  // A file flow counts its checked boxes only: an agent that ends can neither lift nor finish it.
+  if (f.source) return f
   // A title once known done stays done, even after its agent leaves the list.
   const merged = new Set([...(f.doneTitles ?? []), ...list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s && stages[s.word]?.isDone).map(s => s?.task)])
   const doneTitles = [...merged] as string[]
