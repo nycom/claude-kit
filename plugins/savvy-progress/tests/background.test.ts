@@ -1,13 +1,19 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { Plugin } from 'claude-code/testing'
 
 import { bash, PROPS, T0 } from './drawing'
 import type { $T, OnT } from './drawing'
+import type { BackgroundTask } from '../types'
+let seenRows: BackgroundTask[] = []
+// What CronList answers (null: a deny), and how often it was called.
+let listed: Record<string, unknown>[] | null | 'throw' | 'error' = []
+let listCalls = 0
 const PANE = { plugin: 'savvy-progress', component: 'Pane', requestId: 'savvy-agents', props: PROPS } as const
 
-const setup = (on: OnT, toasts: string[] = [], opens: string[] = [], calls: Record<string, unknown>[] = []) => {
+const setup = (on: OnT, toasts: string[] = [], opens: string[] = [], calls: Record<string, unknown>[] = [], cron: Record<string, unknown> = {}) => {
   const clock = mock.clock(on, { now: T0 })
   on('ui.render', (h, e) => h.ui.resolve(e).Text({ children: [''] }))
-  on('ui.toast', (_$, e) => (toasts.push(e.text), { value: undefined }))
+  on('ui.toast', (_$, e) => (e.text.startsWith('bg:') ? (seenRows = JSON.parse(e.text.slice(3)) as BackgroundTask[]) : toasts.push(e.text), { value: undefined }))
   on('ui.open', (_$, e) => (opens.push(e.id), { value: { isPlaced: true } }))
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
   on('prompt.submit', (_$, e) => ({ text: e.text }))
@@ -15,7 +21,14 @@ const setup = (on: OnT, toasts: string[] = [], opens: string[] = [], calls: Reco
   on('classic.SessionStart', () => ({}))
   on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' } }))
   on('tool.call', { tool: 'Monitor' }, () => ({ result: { taskId: 'm1', timeoutMs: 300000 } }))
-  on('tool.call', { tool: 'CronCreate' }, () => ({ result: { id: 'c1', humanSchedule: 'every 5 minutes', recurring: true } }))
+  on('tool.call', { tool: 'CronCreate' }, () => ({ result: { id: 'c1', humanSchedule: 'every 5 minutes', recurring: true, ...cron } }))
+  on('tool.call', { tool: 'CronList' }, () => {
+    listCalls++
+    if (listed === 'throw') throw new Error('engine down')
+    // An error that still carries jobs: their times must not be taken.
+    if (listed === 'error') return { result: { jobs: [{ id: 'c1', nextFireAt: T0 + 999_999 }] }, isError: true } as never
+    return (listed === null ? { deny: 'not allowed' } : { result: { jobs: listed } }) as never
+  })
   on('tool.call', { tool: 'ScheduleWakeup' }, (_$, e) =>
     'stop' in e && e.stop
       ? (calls.push(e as never), { result: { scheduledFor: 0, clampedDelaySeconds: 0, wasClamped: false, stopped: true, cancelledWakeups: 1 } })
@@ -406,4 +419,156 @@ test('a Stop that lists a task twice draws it once, every Client key once', asyn
   expect(new Set(keys).size).toBe(keys.length)
   expect(text).toContain('Background · 2')
   expect(text.split('npm test --watch').length - 1).toBe(1)
+})
+
+// savvy's background rows, as another mod (clawpit) reads them; it hands them over in a toast.
+const READER: Plugin = {
+  name: 'reader',
+  register(on) {
+    on('prompt.submit', async ($, e, next) => {
+      if (e.text === 'read background') $.ui.toast(`bg:${JSON.stringify(((await $.state.get({ plugin: 'savvy-progress', key: 'background' } as never)) as { value?: unknown }).value ?? [])}`)
+      return next(e)
+    })
+  },
+}
+const rows = async ($: $T) => {
+  await $.prompt.submit({ text: 'read background', origin: { kind: 'task-notification' }, wait: false } as never)
+  return seenRows
+}
+const R = { plugins: [READER] }
+const CRON = { id: 'c1', schedule: '*/5 * * * *', recurring: true, prompt: 'check the deploy' }
+const stop = ($: $T, crons: Record<string, unknown>[] = [CRON]) => $.classic.Stop({ stop_hook_active: false, background_tasks: [], session_crons: crons } as never)
+
+test('a cron with nextFireAt counts down; the stop after its fire takes the next run from CronList and keeps the last', R, async ($, on) => {
+  listed = []
+  const clock = setup(on, [], [], [], { nextFireAt: T0 + 210_000 })
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  expect(await shown($)).toContain('next in 4m')
+  expect((await rows($))[0]).toMatchObject({ kind: 'cron', schedule: 'every 5 minutes', nextAt: T0 + 210_000 })
+
+  // A stop before the fire asks nothing: the time cannot have moved.
+  listCalls = 0
+  await stop($)
+  expect(listCalls).toBe(0)
+  expect((await rows($))[0]?.lastAt).toBeUndefined()
+
+  // After the fire the engine moves on (here 4m45s after it, the scheduler's */5 rule).
+  await clock.advance(240_000)
+  listed = [{ id: 'c1', nextFireAt: T0 + 210_000 + 285_000 }, { id: 'other', nextFireAt: T0 }]
+  await stop($)
+  expect((await rows($))[0]).toMatchObject({ status: 'scheduled', lastAt: T0 + 210_000, nextAt: T0 + 495_000 })
+  expect(await shown($)).toContain('next in 5m')
+})
+
+test('a cron without nextFireAt reads its schedule until CronList gives it a time', R, async ($, on) => {
+  listed = []
+  setup(on)
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  await stop($)
+  expect((await rows($))[0]?.nextAt).toBeUndefined()
+  expect(await shown($)).toContain('every 5 minutes')
+  listed = [{ id: 'c1', nextFireAt: T0 + 180_000 }]
+  await stop($)
+  expect((await rows($))[0]).toMatchObject({ nextAt: T0 + 180_000 })
+  expect((await rows($))[0]?.lastAt).toBeUndefined()
+})
+
+test('a nextFireAt that is not a positive finite number is ignored, from CronCreate or CronList', R, async ($, on) => {
+  const result: Record<string, unknown> = {}
+  setup(on, [], [], [], result)
+  for (const nextFireAt of [0, -5, Number.NaN, '1767225600000', null]) {
+    result.nextFireAt = nextFireAt
+    listed = [{ id: 'c1', nextFireAt }]
+    await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+    await stop($)
+    expect((await rows($))[0]?.nextAt).toBeUndefined()
+  }
+  // A shape CronList never gives is no time either.
+  listed = 'x' as never
+  await stop($)
+  expect((await rows($))[0]?.nextAt).toBeUndefined()
+})
+
+test('a denied, failed or thrown CronList keeps the row as it was; the stop still reconciles', R, async ($, on) => {
+  const clock = setup(on, [], [], [], { nextFireAt: T0 + 210_000 })
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  await clock.advance(240_000)
+  for (const answer of [null, 'error', 'throw'] as const) {
+    listed = answer
+    await stop($)
+    expect((await rows($))[0]).toMatchObject({ status: 'scheduled', nextAt: T0 + 210_000 })
+  }
+  expect(await shown($)).toContain('due')
+  await stop($, [])
+  expect((await rows($))[0]?.status).toBe('done')
+})
+
+test('a cron the stop adds takes its next run from CronList', R, async ($, on) => {
+  listed = [{ id: 'c7', nextFireAt: T0 + 300_000 }]
+  setup(on)
+  await stop($, [{ id: 'c7', schedule: '0 * * * *', recurring: true, prompt: 'poll the queue' }])
+  expect((await rows($))[0]).toMatchObject({ id: 'c7', kind: 'cron', schedule: '0 * * * *', nextAt: T0 + 300_000 })
+  expect(await shown($)).toContain('next in 5m')
+})
+
+test('CronList is asked only while a recurring cron is scheduled', R, async ($, on) => {
+  listed = []
+  listCalls = 0
+  setup(on)
+  await $.tool.call({ tool: 'ScheduleWakeup', delaySeconds: 720, reason: 'wait for CI', prompt: '/loop check CI' } as never)
+  await stop($, [{ id: 'w1', schedule: '14 12 9 10 *', recurring: false, prompt: '/loop check CI' }])
+  await stop($, [])
+  expect(listCalls).toBe(0)
+  await stop($)
+  expect(listCalls).toBe(1)
+})
+
+test('a one-shot cron keeps the engine\'s time and gets no lastAt', R, async ($, on) => {
+  listed = []
+  const clock = setup(on, [], [], [], { nextFireAt: T0 + 180_000, recurring: false })
+  await $.tool.call({ tool: 'CronCreate', cron: '5 12 9 10 *', prompt: 'remind me', recurring: false } as never)
+  await clock.advance(200_000)
+  await stop($, [{ ...CRON, schedule: '5 12 9 10 *', recurring: false, prompt: 'remind me' }])
+  expect((await rows($))[0]).toMatchObject({ status: 'scheduled', nextAt: T0 + 180_000 })
+  expect((await rows($))[0]?.lastAt).toBeUndefined()
+  expect(await shown($)).toContain('due')
+})
+
+test('a cron with nextAt keeps the minute clock; one without arms nothing', async ($, on) => {
+  const ticks = countTicks(on)
+  const clock = setup(ticks.on, [], [], [], { nextFireAt: T0 + 210_000 })
+  mock.env(on, { HOME: '/home/k' })
+  on('fs.stat', () => { throw new Error('ENOENT') })
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('tool.register', () => ({ value: undefined }) as never)
+  on('command.register', () => ({ value: undefined }) as never)
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as never)
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  ticks.n = 0
+  await clock.advance(120_000)
+  expect(ticks.n).toBeGreaterThan(0)
+  expect(ticks.n).toBeLessThanOrEqual(2)
+})
+
+test('a due job the busy session has not fired lists as now: the row stays due, lastAt unmoved', R, async ($, on) => {
+  const clock = setup(on, [], [], [], { nextFireAt: T0 + 210_000 })
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  await clock.advance(240_000)
+  // The engine clamps an unfired job's time to Date.now(), a moment after the stop's clock read.
+  listed = [{ id: 'c1', nextFireAt: T0 + 240_000 + 5 }]
+  await stop($)
+  expect((await rows($))[0]).toMatchObject({ nextAt: T0 + 210_000 })
+  expect((await rows($))[0]?.lastAt).toBeUndefined()
+  expect(await shown($)).toContain('due')
+})
+
+test('a job CronList lists with no time drops the stale nextAt and reads its schedule', R, async ($, on) => {
+  const clock = setup(on, [], [], [], { nextFireAt: T0 + 210_000 })
+  await $.tool.call({ tool: 'CronCreate', cron: '*/5 * * * *', prompt: 'check the deploy' } as never)
+  await clock.advance(240_000)
+  listed = [{ id: 'c1' }]
+  await stop($)
+  expect((await rows($))[0]?.nextAt).toBeUndefined()
+  expect(await shown($)).toContain('every 5 minutes')
 })
