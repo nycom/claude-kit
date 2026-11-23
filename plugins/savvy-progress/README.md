@@ -94,7 +94,7 @@ While the skins mod has a dark skin on, its theme wins over the file, and a `/sk
 
 ## Settings
 
-`language`: `auto` (default), `en` or `ru`. `auto` follows Claude Code's `language` setting, then the system locale, and falls back to English. Set it in `/config`, or, for a mod loaded by hand, in `~/.claude/settings.json`:
+`language`: `auto` (default), `en` or `ru`. `auto` follows Claude Code's `language` setting, then the system locale, and falls back to English. Set it in `/config`, or in `~/.claude/settings.json`, keyed `<name>@<marketplace>` as shown (the bare `savvy-progress` key is for a plugin loaded with `--plugin-dir`):
 
 ```json
 { "pluginConfigs": { "savvy-progress@claude-kit": { "options": { "language": "ru" } } } }
