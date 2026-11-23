@@ -1657,7 +1657,8 @@ export const register: Register = (on, options) => {
     if (input.blocked !== undefined && (options.sessionNeed === 'tool' || options.sessionNeed === 'both')) {
       const text = clip(oneLine(input.blocked), 300)
       const had = await read($, need)
-      const since = await $.clock.now()
+      // The same question again is the same wait: it keeps its age.
+      const since = had?.text === text ? had.since : await $.clock.now()
       await update($, need, () => (text ? { text, since, source: 'tool' } : null))
       if (text && had?.text !== text) $.ui.toast(`${tr().toastInput} — ${clip(text, 120)}`)
       // A call carrying only blocked must not start a blank flow.
@@ -1732,8 +1733,8 @@ export const register: Register = (on, options) => {
       try {
         return await next(e)
       } finally {
-        // A tool need this dialog covered is still unanswered: it comes back.
-        await update($, need, n => (n?.since === mine.since && n.text === mine.text ? (prev?.source === 'tool' ? prev : null) : n))
+        // Only this dialog's own need clears; one set since stays, and none set before comes back.
+        await update($, need, n => (n?.since === mine.since && n.text === mine.text ? null : n))
       }
     })
 
@@ -2356,7 +2357,8 @@ export const register: Register = (on, options) => {
             {titleRow}
             {crabRow}
             {chip}
-            {crewButton}
+            {/* A session need alone draws its chip, not a "0 agents" button. */}
+            {crew ? crewButton : null}
           </Box>
           {theirs}
         </Box>

@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Plugin } from 'claude-code/testing'
-import { imgOf, PROPS, setup } from './drawing'
+import { imgOf, PROPS, setup, spawn } from './drawing'
 import type { $T, OnT } from './drawing'
 
 const ASK = { tool: 'AskUserQuestion', questions: [{ question: '  Which\n database? ', header: 'db', options: [{ label: 'a', description: '' }, { label: 'b', description: '' }] }] }
@@ -11,7 +11,7 @@ let seen: unknown = undefined
 // The host answers AskUserQuestion only once the test opens the gate, so a test can look while
 // the dialog is up; every call and toast the host received is kept.
 const host = (on: OnT) => {
-  setup(on)
+  const clock = setup(on)
   const calls: unknown[] = []
   const toasts: string[] = []
   let open = () => {}
@@ -37,7 +37,7 @@ const host = (on: OnT) => {
       },
     }
   }
-  return { calls, toasts, ask }
+  return { calls, toasts, ask, clock }
 }
 // Reads savvy's need atom as another mod would, and hands it to the test in a toast.
 const READER: Plugin = {
@@ -227,7 +227,8 @@ test('both: ask and tool set the need together', { options: { sessionNeed: 'both
   const dialog = await h.ask($.tool.call(ASK as never))
   expect(await needOf($)).toMatchObject({ text: 'Which database?', source: 'ask' })
   await dialog.answer()
-  expect(await needOf($)).toMatchObject({ text: 'from tool', source: 'tool' })
+  // The dialog's answer is the one the tool was waiting on: nothing comes back.
+  expect(await needOf($)).toBe(null)
 })
 
 test('both: a need set while the dialog is up stays when it closes', { options: { sessionNeed: 'both' }, plugins: [READER] }, async ($, on) => {
@@ -237,3 +238,33 @@ test('both: a need set while the dialog is up stays when it closes', { options: 
   await dialog.answer()
   expect(await needOf($)).toMatchObject({ text: 'newer', source: 'tool' })
 })
+
+test('ask: with no flow and no agents the band draws the chip but no agents button; one agent brings it back', { options: { sessionNeed: 'ask' } }, async ($, on) => {
+  const h = host(on)
+  const band = async (surface: 'desktop' | 'terminal') => {
+    const ui = await $.ui.mount({ plugin: 'savvy-progress', surface, component: 'AbovePrompt', props: PROPS })
+    const labels = (await ui.findAll({ type: 'Button' })).map(n => (n as unknown as { props?: { label?: string } }).props?.label ?? '')
+    await ui.unmount()
+    return labels.filter(l => /agents?$/.test(l))
+  }
+  const dialog = await h.ask($.tool.call(ASK as never))
+  for (const surface of ['desktop', 'terminal'] as const) {
+    expect(await drawn($, 'AbovePrompt', surface)).toContain('⚠ 1 needs attention')
+    expect(await band(surface)).toEqual([])
+  }
+  await spawn($, 'schema')
+  for (const surface of ['desktop', 'terminal'] as const) expect(await band(surface)).toEqual(['1 agent'])
+  await dialog.answer()
+})
+
+for (const mode of ['tool', 'both'] as const)
+  test(`${mode}: blocked with the same text keeps its since, a new text takes a new one`, { options: { sessionNeed: mode }, plugins: [READER] }, async ($, on) => {
+    const h = host(on)
+    await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: 'Which port?' } as never)
+    const first = ((await needOf($)) as { since: number }).since
+    await h.clock.advance(60_000)
+    await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: ' Which\n port? ' } as never)
+    expect(await needOf($)).toEqual({ text: 'Which port?', since: first, source: 'tool' })
+    await $.tool.call({ tool: 'mcp__savvy-progress__progress', blocked: 'Which host?' } as never)
+    expect(await needOf($)).toEqual({ text: 'Which host?', since: first + 60_000, source: 'tool' })
+  })
