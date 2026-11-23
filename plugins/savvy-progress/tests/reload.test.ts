@@ -58,3 +58,41 @@ test('each new session registers again', async ($, on) => {
   await $.session.start({ cwd: '/w', source: 'clear' } as never)
   expect(names(reg)).toEqual(['progress', 'step', 'agents-info', 'progress', 'step', 'agents-info'])
 })
+
+test('after a reload, a boot that fails once is tried again by the next prompt', async ($, on) => {
+  mock.clock(on)
+  mock.env(on, { HOME: '/home/k' })
+  const reg: string[] = []
+  let fail = true
+  on('fs.stat', () => {
+    throw new Error('ENOENT')
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  on('tool.register', (_$, e) => {
+    if (fail) {
+      fail = false
+      throw new Error('busy')
+    }
+    reg.push(e.name)
+    return { value: undefined }
+  })
+  on('command.register', (_$, e) => (reg.push(e.name), { value: undefined }))
+  on('prompt.submit', (_$, e) => ({ text: e.text }))
+  expect(await submit($)).toMatchObject({ text: 'go' })
+  expect(reg).toEqual([])
+  await submit($)
+  expect(reg).toEqual(['progress', 'step', 'agents-info'])
+})
+
+test('after a reload, a spawn registers the tools', async ($, on) => {
+  const reg = host(on)
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'w1' }))
+  await $.agent.spawn({ tool_use_id: 't', prompt: 'P', description: 'fix tests', subagentType: 'general-purpose', provider: 'claude', parentModel: 'x', background: false, fork: false } as never)
+  expect(names(reg)).toEqual(['progress', 'step', 'agents-info'])
+})
+
+test('after a reload, /agents-info answers in the language of the new load', { options: { language: 'ru' } }, async ($, on) => {
+  host(on)
+  on('ui.panes', () => ({ value: [] }))
+  expect(await $.command.run({ command: 'agents-info', args: 'open' } as never)).toEqual({ text: 'Панель агентов открыта.' } as never)
+})

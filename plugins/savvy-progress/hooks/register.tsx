@@ -270,7 +270,7 @@ const STRINGS = {
   },
 } as const
 
-// Module scope is fine here: session.start sets it again on every (re)load.
+// Module scope is fine here: boot sets it again on every load and session.
 let lang: Lang = 'en'
 // The option showCost: false leaves the estimate out of what savvy draws (the cost is still tracked).
 let showCost = true
@@ -1552,10 +1552,18 @@ async function autoOpen($: EngineInterface, key: string): Promise<void> {
 }
 
 // Once per load and session: a reload inside a running session fires no session.start, so the
-// next prompt or savvy tool call runs this there, with the options of the new load.
+// next prompt, spawn, /agents-info or savvy tool call runs this there, with the options of the new
+// load. A reload in the middle of a turn keeps the old schema until one of them runs.
 let booted: Promise<void> | null = null
 let bootOptions: Record<string, unknown> = {}
-const boot = ($: EngineInterface) => (booted ??= startUp($))
+// A failed boot is forgotten, so the next hook tries again; a newer boot is left in place.
+const boot = ($: EngineInterface): Promise<void> => {
+  const mine: Promise<void> = (booted ??= startUp($).catch((err: unknown) => {
+    if (booted === mine) booted = null
+    throw err
+  }))
+  return mine
+}
 async function startUp($: EngineInterface): Promise<void> {
   lang = await detectLang($, bootOptions.language)
   await update($, stagesAtom, () => stageEntries)
@@ -1655,6 +1663,7 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'agents-info' }, async ($, e) => {
+    await boot($).catch(() => undefined)
     // `/agents-info open` opens the panel, or brings it forward from behind another tab, without toggling it.
     if ((e.args ?? '').trim() === 'open') {
       const at = await $.clock.now()
@@ -1868,6 +1877,7 @@ export const register: Register = (on, options) => {
   })
 
   on('agent.spawn', async ($, e, next) => {
+    await boot($).catch(() => undefined)
     const isUnbriefed = e.subagentType.startsWith('savvy-') && !e.prompt.includes(STEP_TOOL)
     const started = await next(isUnbriefed ? { ...e, prompt: e.prompt + STEP_BRIEF } : e)
     if (started.deny !== undefined) return started
