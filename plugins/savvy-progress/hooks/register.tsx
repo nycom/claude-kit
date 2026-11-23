@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HookFailure, Register, RenderElement } from 'claude-code'
 
-import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask } from '../types'
+import type { AgentRun, BackgroundTask, Flow, Palette, Panel, Phase, PlannedTask, SessionNeed } from '../types'
 import type { ControlProps } from './controls'
 import type { MarkProps } from './mark'
 
@@ -16,7 +16,9 @@ const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
 const theme = atom({ plugin: 'savvy-progress', key: 'theme' } as const, null)
 const background = atom({ plugin: 'savvy-progress', key: 'background' } as const, [])
 const status = atom({ plugin: 'savvy-progress', key: 'status' } as const, null)
+const stagesAtom = atom({ plugin: 'savvy-progress', key: 'stages' } as const, [] as string[])
 const mainTurn = atom({ plugin: 'savvy-progress', key: 'mainTurn' } as const, false)
+const need = atom({ plugin: 'savvy-progress', key: 'need' } as const, null)
 
 // Every looping image is redrawn on the page's main thread each frame: only the most recent runs
 // of the pane loop, the rest hold their first frame. Which ones changes only as runs start and end.
@@ -52,6 +54,7 @@ type ProgressInput = {
   phase?: Phase
   finished?: boolean
   tasks?: { title?: string; tier?: string; after?: number[] }[]
+  blocked?: string
 }
 
 // The Omarchy palette, when its file exists; render handlers copy the atom here and
@@ -269,6 +272,9 @@ const STRINGS = {
 
 // Module scope is fine here: session.start sets it again on every (re)load.
 let lang: Lang = 'en'
+// The option showCost: false leaves the estimate out of what savvy draws (the cost is still tracked).
+let showCost = true
+const costPart = (c: number): string => (showCost ? ` · ≈${fmtCost(c)}` : '')
 const tr = () => STRINGS[lang]
 
 const isRussian = (v: unknown): boolean => typeof v === 'string' && /^(ru|russian|рус)/i.test(v.trim())
@@ -631,35 +637,197 @@ const titleOf = (titles: string[], description: string): string | undefined => {
   return titles.map(norm).filter(t => d === t || d.startsWith(`${t} `)).sort((a, b) => b.length - a.length)[0]
 }
 
-// The delegate workflow's labels move the bar on their own: "<task> implement|review c1|fix c1|validate c1|merge",
-// "<repo> docs". Only labels that name a planned task move it; a coordinator call still overwrites.
-const STAGE: Record<string, Phase> = { implement: 'delegate', review: 'review', fix: 'review', validate: 'review', recheck: 'review', merge: 'close', docs: 'close' }
+// Labels move the bar on their own: "<task> <word> ...". The words come from the `stages` option, entries
+// "word=phase[+done][+finish]": `+done` counts the task done when such an agent answers, `+finish` finishes
+// the flow when an agent whose last word it is answers after every task is done. Only labels that name a
+// planned task move it; a coordinator call still overwrites.
+type Stage = { phase: Phase; isDone: boolean; isFinish: boolean }
+let stages: Record<string, Stage> = {}
+let stageEntries: string[] = []
+let stageIgnored: string[] = []
+// The manifest's default words, for an option that is not a list.
+const DEFAULT_STAGES = ['implement=delegate', 'review=review', 'fix=review', 'validate=review', 'recheck=review', 'merge=close+done', 'docs=close+finish']
+const parseStages = (list: readonly string[]): void => {
+  const table = new Map<string, Stage & { entry: string }>()
+  const ignored: string[] = []
+  for (const raw of list) {
+    const [head = '', ...marks] = String(raw).toLowerCase().split('+').map(m => m.trim())
+    const [w = '', phase = ''] = head.split('=')
+    const word = norm(w)
+    const stage = { phase: phase.trim() as Phase, isDone: marks.includes('done'), isFinish: marks.includes('finish') }
+    if (!word || word.includes(' ') || head.split('=').length !== 2 || !PHASES.includes(stage.phase) || marks.some(m => m !== 'done' && m !== 'finish')) {
+      ignored.push(String(raw))
+      continue
+    }
+    if (table.has(word)) ignored.push(`${table.get(word)?.entry} (replaced by a later "${word}")`)
+    table.set(word, { ...stage, entry: `${word}=${stage.phase}${stage.isDone ? '+done' : ''}${stage.isFinish ? '+finish' : ''}` })
+  }
+  stages = Object.fromEntries([...table].map(([k, { entry: _, ...v }]) => [k, v]))
+  stageEntries = [...table.values()].map(v => v.entry)
+  stageIgnored = ignored
+}
 const stageOf = (titles: string[], description: string): { task: string; word: string } | undefined => {
   const task = titleOf(titles, description)
   return task === undefined ? undefined : { task, word: norm(description).slice(task.length).trim().split(' ')[0] ?? '' }
 }
-const isDocs = (a: AgentRun): boolean => norm(a.description).split(' ').pop() === 'docs'
+const isFinishing = (a: AgentRun): boolean => stages[norm(a.description).split(' ').pop() ?? '']?.isFinish === true
 
 // `run` is the agent that just spawned or ended. Phase only moves forward, done never drops.
 const autoFlow = (f: Flow | null, list: AgentRun[], run: AgentRun | undefined): Flow | null => {
   if (!f || f.isFinished || !f.tasks?.length || !run) return f
   const titles = f.tasks.map(t => t.title)
   if (run.status === 'running') {
-    const phase = STAGE[stageOf(titles, run.description)?.word ?? '']
+    const phase = stages[stageOf(titles, run.description)?.word ?? '']?.phase
     return phase && PHASES.indexOf(phase) > PHASES.indexOf(f.phase) ? { ...f, phase } : f
   }
-  const merged = new Set(list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s?.word === 'merge').map(s => s?.task))
+  // A file flow counts its checked boxes only: an agent that ends can neither lift nor finish it.
+  if (f.source) return f
+  // A title once known done stays done, even after its agent leaves the list.
+  const merged = new Set([...(f.doneTitles ?? []), ...list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s && stages[s.word]?.isDone).map(s => s?.task)])
+  const doneTitles = [...merged] as string[]
   const done = Math.max(f.done, Math.min(f.total, merged.size))
   const isFinished =
-    done > 0 && done === f.total && isDocs(run) && run.status === 'done' && !list.some(a => a.status === 'running' && (isDocs(a) || titleOf(titles, a.description) !== undefined))
-  return done === f.done && !isFinished ? f : { ...f, done, ...(isFinished ? { isFinished, phase: 'close' as const } : {}) }
+    done > 0 && done === f.total && isFinishing(run) && run.status === 'done' && !list.some(a => a.status === 'running' && (isFinishing(a) || titleOf(titles, a.description) !== undefined))
+  return done === f.done && doneTitles.length === (f.doneTitles?.length ?? 0) && !isFinished ? f : { ...f, done, ...(doneTitles.length ? { doneTitles } : {}), ...(isFinished ? { isFinished, phase: 'close' as const } : {}) }
 }
 
 const plannedOf = (f: Flow | null, list: AgentRun[]): Planned[] => {
   if (!f || f.isFinished) return []
   const tasks = f.tasks ?? []
-  const started = new Set(list.map(a => titleOf(tasks.map(t => t.title), a.description)))
+  const started = new Set([...(f.doneTitles ?? []), ...list.map(a => titleOf(tasks.map(t => t.title), a.description))])
   return tasks.map((t, i) => ({ ...t, n: i + 1 })).filter(t => !started.has(norm(t.title)))
+}
+
+// Plan files: the option `watch` lists globs of files whose checkboxes, after a main-session Edit or Write,
+// are the flow; with `statusWords` a file with none may be a `key: status` map instead. A relative glob is
+// the session directory's, and matches nothing when the engine gives none.
+type Parsed = { title: string; tasks: { title: string; isDone: boolean }[]; phase?: Phase; isCut?: boolean }
+let watch: string[] = []
+let statusWords = new Map<string, 'done' | 'skip' | Phase>()
+const GLOB_PART: Record<string, string> = { '**/': '(?:.*/)?', '**': '.*', '*': '[^/]*', '?': '[^/]' }
+const globToRegExp = (glob: string): RegExp => {
+  const body = glob.replace(/\*\*\/|\*\*|[*?]|[.+^$|()[\]{}\\]/g, t => GLOB_PART[t] ?? `\\${t}`)
+  return new RegExp(`^${body}$`)
+}
+// Paths and globs are matched with '/' separators; a drive letter or a leading separator makes one absolute.
+const slashed = (p: string): string => p.replace(/\\/g, '/')
+const globPath = (glob: string, cwd: string): string => {
+  const g = slashed(glob)
+  return /^(?:[A-Za-z]:)?\//.test(g) ? g : cwd ? `${slashed(cwd).replace(/\/$/, '')}/${g.replace(/^\.\//, '')}` : ''
+}
+// The first watch entry the path matches, -1 for none: earlier entries outrank later ones.
+const watchRank = (path: string, cwd: string): number =>
+  watch.findIndex(g => {
+    const p = globPath(g, cwd)
+    return !!p && globToRegExp(p).test(path)
+  })
+const fileTitle = (text: string, path: string): string => clip(oneLine(/^# (.+)$/m.exec(text)?.[1]) || path.split('/').pop() || path, MAX_TITLE)
+
+const BOX = /^(\s*)[-*+] \[( |x|X)\] (.+)$/
+// Boxes at the shallowest indent are the tasks; deeper ones are their detail.
+const parseChecklist = (text: string, path: string): Parsed | null => {
+  const boxes = text.split(/\r?\n/).map(l => BOX.exec(l)).filter((m): m is RegExpExecArray => m !== null)
+  const indent = Math.min(...boxes.map(m => m[1]?.length ?? 0))
+  const all = boxes
+    .filter(m => m[1]?.length === indent)
+    .map(m => ({ title: clip(oneLine(m[3]), MAX_TITLE), isDone: m[2] !== ' ' }))
+    .filter(t => t.title)
+  const tasks = all.slice(0, MAX_TASKS)
+  return tasks.length ? { title: fileTitle(text, path), tasks, isCut: all.length > MAX_TASKS } : null
+}
+
+const parseStatusWords = (list: readonly string[]): Map<string, 'done' | 'skip' | Phase> => {
+  const words = new Map<string, 'done' | 'skip' | Phase>()
+  for (const raw of list) {
+    const [word = '', to = '', ...rest] = String(raw).toLowerCase().split('=').map(p => p.trim())
+    if (/^[\w-]+$/.test(word) && !rest.length && (to === 'done' || to === 'skip' || PHASES.includes(to as Phase))) words.set(word, to as 'done' | 'skip' | Phase)
+  }
+  return words
+}
+// A block (one parent, one indent) of `key: word` lines is a status map when one of its words is configured:
+// each entry is a task, done or left out as its word maps; the phase is the furthest one a task not done maps to.
+const ENTRY = /^(\s*)([\w.-]+):\s*([\w-]+)\s*(#.*)?$/
+const PARENT = /^\s*[\w.-]+:\s*(#.*)?$/
+const parseStatusMap = (text: string, path: string): Parsed | null => {
+  const parents: { indent: number; id: number }[] = []
+  const blocks = new Map<string, { key: string; word: string }[]>()
+  let parentCount = 0
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue
+    const indent = line.length - line.trimStart().length
+    while ((parents.at(-1)?.indent ?? -1) >= indent) parents.pop()
+    const m = ENTRY.exec(line)
+    const block = `${parents.at(-1)?.id ?? 0}:${indent}`
+    if (m) blocks.set(block, [...(blocks.get(block) ?? []), { key: m[2] ?? '', word: (m[3] ?? '').toLowerCase() }])
+    else if (PARENT.test(line)) parents.push({ indent, id: ++parentCount })
+  }
+  const tasks: Parsed['tasks'] = []
+  let phase: Phase | undefined
+  for (const entries of blocks.values()) {
+    if (!entries.some(e => statusWords.has(e.word))) continue
+    for (const { key, word } of entries) {
+      const to = statusWords.get(word)
+      if (to === 'skip') continue
+      tasks.push({ title: clip(oneLine(key), MAX_TITLE), isDone: to === 'done' })
+      if (to && to !== 'done' && (!phase || PHASES.indexOf(to) > PHASES.indexOf(phase))) phase = to
+    }
+  }
+  return tasks.length ? { title: fileTitle(text, path), tasks: tasks.slice(0, MAX_TASKS), phase, isCut: tasks.length > MAX_TASKS } : null
+}
+
+// A read of the same file carries its flow on: done never drops, the phase only moves forward until the file
+// is finished, and a new unchecked task reopens it. Another file's read starts afresh.
+const fileFlow = (prev: Flow | null, parsed: Parsed, path: string): Flow => {
+  const same = prev?.source === path ? prev : null
+  const checked = parsed.tasks.filter(t => t.isDone).map(t => norm(t.title))
+  const total = parsed.tasks.length
+  const doneTitles = [...new Set([...(same?.doneTitles ?? []), ...checked])]
+  const done = Math.min(total, Math.max(same?.done ?? 0, checked.length))
+  const isFinished = checked.length === total && !parsed.isCut
+  const found: Phase = isFinished ? 'close' : (parsed.phase ?? (done ? 'delegate' : 'plan'))
+  const was = same && !same.isFinished ? same.phase : 'plan'
+  return {
+    ...blank(),
+    ...same,
+    title: parsed.title,
+    total,
+    done,
+    phase: PHASES.indexOf(was) > PHASES.indexOf(found) ? was : found,
+    isFinished,
+    tasks: parsed.tasks.map(t => ({ title: t.title, tier: '', after: [] })),
+    source: path,
+    ...(doneTitles.length ? { doneTitles } : {}),
+  }
+}
+// A flow reported through `progress` (no source) wins until it is finished; another file takes over a file
+// flow only once that one is finished or came from a later watch entry.
+const isTakenBy = (prev: Flow | null, path: string, rank: number, cwd: string): boolean =>
+  !prev || prev.isFinished || prev.source === path || (prev.source !== undefined && watchRank(prev.source, cwd) > rank)
+
+const sessionCwd = async ($: EngineInterface): Promise<string> => {
+  try {
+    return await $.session.cwd()
+  } catch {
+    return ''
+  }
+}
+// The file is read at the path as given; it is matched, named and kept as `source` with '/' separators.
+async function readWatched($: EngineInterface, file: string): Promise<void> {
+  const cwd = await sessionCwd($)
+  const path = slashed(file)
+  const rank = watchRank(path, cwd)
+  if (rank < 0) return
+  const text = String(await $.fs.read(file))
+  const parsed = parseChecklist(text, path) ?? (statusWords.size ? parseStatusMap(text, path) : null)
+  if (parsed) await update($, flow, prev => (isTakenBy(prev, path, rank, cwd) ? fileFlow(prev, parsed, path) : prev))
+}
+// At session start, so a resumed session shows its plan before the next edit; wildcard globs wait for one.
+async function readLiterals($: EngineInterface): Promise<void> {
+  const cwd = await sessionCwd($)
+  for (const g of watch.filter(g => !/[*?]/.test(g))) {
+    const path = globPath(g, cwd)
+    if (path && (await $.fs.exists(path))) await readWatched($, path).catch(() => undefined)
+  }
 }
 
 const totals = (list: AgentRun[], at: number) => {
@@ -977,7 +1145,7 @@ const summaryText = (list: AgentRun[], t: ReturnType<typeof totals>): string => 
   const held = list.filter(a => a.status !== 'running' && a.heldDone).length
   // During the finish hold nothing runs: say what is done instead of "0 running".
   const head = running || !held ? `${running} ${tr().busy}` : `${held} ${tr().doneWord}`
-  return t.tokens > 0 ? `${head} · ≈${fmtCost(t.cost)} · ${fmtTime(t.time)}` : `${head} · — · —`
+  return t.tokens > 0 ? `${head}${costPart(t.cost)} · ${fmtTime(t.time)}` : `${head} · —${showCost ? ' · —' : ''}`
 }
 
 const summarySvg = (W: number, text: string): string =>
@@ -1012,7 +1180,8 @@ const needsAttention = (a: AgentRun): boolean => a.status === 'running' && (!!a.
 const failedHistory = (a: AgentRun): string =>
   a.status !== 'running' && (a.failedAttempts ?? 0) >= 3 ? `${tr().failedFlag.toLowerCase()} ×${a.failedAttempts}` : ''
 
-const flagOf = (a: AgentRun): string => (a.blocked ? tr().needsInput : `${tr().failedFlag} ×${a.failedAttempts ?? 0}`)
+type Flagged = Pick<AgentRun, 'description' | 'type' | 'blocked' | 'failedAttempts'>
+const flagOf = (a: Flagged): string => (a.blocked ? tr().needsInput : `${tr().failedFlag} ×${a.failedAttempts ?? 0}`)
 
 // The red label: static, no animation.
 const pillW = (text: string): number => Math.round(textWidth(text, 10) + 12)
@@ -1030,7 +1199,7 @@ const cardStats = (a: AgentRun, at: number): { right: string; dim: string } => {
   const s = tr()
   const when = a.status === 'done' ? `${s.took} ${time}` : a.status === 'failed' ? `${s.failedAfter} ${time}` : time
   const right = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal} · ${when}` : when
-  const dim = a.tokens > 0 ? `ctx ${ctxOf(a)}% · ≈${fmtCost(a.costUsd)}` : 'ctx — · —'
+  const dim = a.tokens > 0 ? `ctx ${ctxOf(a)}%${costPart(a.costUsd)}` : `ctx —${showCost ? ' · —' : ''}`
   return { right, dim }
 }
 
@@ -1082,11 +1251,14 @@ ${rowLine(DW, h)}`,
 }
 
 // Compact view: one line per flagged agent, so the label is never hidden.
-const flagSvg = (W: number, a: AgentRun): string => {
+const flagSvg = (W: number, a: Flagged): string => {
   const flag = flagOf(a)
   const text = `${a.description || a.type}${a.blocked ? ` — ${a.blocked}` : ''}`
   return svg(W, 20, `${pill(0, 2, flag)}<text class="t" x="${pillW(flag) + 8}" y="14" font-family="${FONT}" font-size="12">${xml(fitText(text, 12, W - pillW(flag) - 8))}</text>`)
 }
+
+// The main session's question, flagged as a worker's is.
+const needRow = (n: SessionNeed): Flagged => ({ description: 'Claude', type: '', blocked: n.text })
 
 const agentAlt = (a: AgentRun): string => {
   const s = tr()
@@ -1148,7 +1320,7 @@ const compactSvg = (W: number, more: number, t: ReturnType<typeof totals>): stri
     W,
     32,
     `${more ? `<text class="s" x="2" y="21" font-family="${FONT}" font-size="12">+${more}</text>` : ''}
-<text class="s" x="${W}" y="21" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">≈${fmtCost(t.cost)} · ${fmtTokens(t.tokens)} · ${fmtTime(t.time)}</text>`,
+<text class="s" x="${W}" y="21" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">${showCost ? `≈${fmtCost(t.cost)} · ` : ''}${fmtTokens(t.tokens)} · ${fmtTime(t.time)}</text>`,
   )
 
 // --- background work: shells and monitors that run, crons and wakeups that wait.
@@ -1380,9 +1552,14 @@ async function autoOpen($: EngineInterface, key: string): Promise<void> {
 }
 
 export const register: Register = (on, options) => {
+  showCost = options.showCost !== false
+  parseStages(Array.isArray(options.stages) ? options.stages : DEFAULT_STAGES)
+  watch = (Array.isArray(options.watch) ? options.watch : []).map(String).filter(g => g.trim())
+  statusWords = parseStatusWords(Array.isArray(options.statusWords) ? options.statusWords : [])
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     lang = await detectLang($, options.language)
+    await update($, stagesAtom, () => stageEntries)
     await $.tool.register({
       name: 'progress',
       description:
@@ -1412,6 +1589,9 @@ export const register: Register = (on, options) => {
               required: ['title', 'tier'],
             },
           },
+          ...(options.sessionNeed === 'tool' || options.sessionNeed === 'both'
+            ? { blocked: { type: 'string', description: 'The question you are waiting on the user for; an empty string clears it' } }
+            : {}),
         },
       },
     })
@@ -1449,6 +1629,7 @@ export const register: Register = (on, options) => {
       name: 'agents-info',
       description: 'Show or hide the panel of subagents: running, finished and planned, with model, context, cost and time',
     })
+    if (stageIgnored.length) $.ui.toast(`savvy-progress: ignored stage entry ${stageIgnored.join(', ')}`)
 
     await retick($)
     themePath = `${(await $.env.get('HOME')) ?? ''}/${THEME_FILE}`
@@ -1456,6 +1637,7 @@ export const register: Register = (on, options) => {
     themeEvery = 0
     themeMtime = 0
     await loadTheme($)
+    if (watch.length) await readLiterals($).catch(() => undefined)
     return started
   })
 
@@ -1476,6 +1658,17 @@ export const register: Register = (on, options) => {
     // and changes nothing, or any subagent could rename, finish or reset the flow.
     if (e.agentId) return { result: 'ignored: only the main session reports the flow' }
     const input = e as unknown as ProgressInput
+    if (input.blocked !== undefined && (options.sessionNeed === 'tool' || options.sessionNeed === 'both')) {
+      const text = clip(oneLine(input.blocked), 300)
+      const had = await read($, need)
+      // The same question again is the same wait: it keeps its age.
+      const since = had?.text === text ? had.since : await $.clock.now()
+      await update($, need, () => (text ? { text, since, source: 'tool' } : null))
+      if (text && had?.text !== text) $.ui.toast(`${tr().toastInput} — ${clip(text, 120)}`)
+      // A call carrying only blocked must not start a blank flow.
+      if (input.title === undefined && input.total === undefined && input.done === undefined && input.phase === undefined && input.finished === undefined && !input.tasks)
+        return { result: text ? 'ok: blocked' : 'ok: cleared' }
+    }
     const prev = await read($, flow)
     if (isNewFlow(prev, input) && input.title !== undefined) {
       // A new flow starts with a clean list; agents still running stay.
@@ -1530,6 +1723,25 @@ export const register: Register = (on, options) => {
     return { result: matched ? 'ok' : `ignored: no panel row for agent ${agentId}` }
   })
 
+  // sessionNeed ask (or both): the main session's AskUserQuestion is its need while the dialog is up.
+  // unasked and off observe nothing. A subagent's question, or a dialog a plugin raised (its $.ui.ask), is not it.
+  if (options.sessionNeed === 'ask' || options.sessionNeed === 'both')
+    on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+      const by = next.origin?.plugin
+      const text = clip(oneLine(e.questions?.[0]?.question), 300)
+      if (e.agentId || (by && by !== 'engine') || !text) return next(e)
+      const mine: SessionNeed = { text, since: await $.clock.now(), source: 'ask' }
+      const prev = await read($, need)
+      await update($, need, () => mine)
+      if (prev?.text !== text) $.ui.toast(`${tr().toastInput} — ${clip(text, 120)}`)
+      try {
+        return await next(e)
+      } finally {
+        // Only this dialog's own need clears; one set since stays, and none set before comes back.
+        await update($, need, n => (n?.since === mine.since && n.text === mine.text ? null : n))
+      }
+    })
+
   // Safety net: worker launches move the faint layer even if the orchestrator forgets to report.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     const type = String(e.subagent_type ?? '')
@@ -1545,6 +1757,16 @@ export const register: Register = (on, options) => {
       await update($, flow, prev => (prev ? { ...prev, running: Math.max(0, prev.running - 1) } : prev))
     }
   })
+
+  // Plan files, only when some are watched: an empty list registers nothing.
+  if (watch.length) {
+    on('tool.call', { tool: ['Edit', 'Write'] }, async ($, e, next) => {
+      const r = await next(e)
+      // The tool has run: a failed read or parse must not fail its call.
+      if (!e.agentId && !r.isError && r.deny === undefined) await readWatched($, str(e.file_path)).catch(() => undefined)
+      return r
+    })
+  }
 
   // Background work, never auto-opening the pane: a shell sent to the background, a monitor,
   // a cron or a wakeup; a wakeup's `stop` ends the waiting wakeups.
@@ -1568,6 +1790,7 @@ export const register: Register = (on, options) => {
     // The user's own next prompt (typed, or from the phone) ends the finish moment: held runs move to
     // Ended, which folds once nothing runs. Notifications, schedules and peers never do.
     if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') {
+      if (await read($, need)) await update($, need, () => null)
       const list = await read($, agents)
       if (list.some(a => a.heldDone)) {
         const after = await update($, agents, l => l.map(a => (a.heldDone ? { ...a, heldDone: undefined } : a)))
@@ -1585,11 +1808,14 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // A new, resumed or cleared session starts with no background rows; the next stop's
-  // reconcile adds back what still runs. A compaction keeps them.
+  // A new, resumed or cleared session starts with no background rows and no open question; the next
+  // stop's reconcile adds back what still runs. A compaction keeps them.
   on('classic.SessionStart', async ($, e, next) => {
     const result = await next(e)
-    if (e.source !== 'compact') await setBackground($, () => []).catch(() => undefined)
+    if (e.source !== 'compact') {
+      await setBackground($, () => []).catch(() => undefined)
+      if (await read($, need)) await update($, need, () => null)
+    }
     return result
   })
 
@@ -1810,7 +2036,8 @@ export const register: Register = (on, options) => {
     const hasEnded = finished.length + bgEnded.length > 0
     const stopButton = (x: BackgroundTask) => <Button key={`stop-${x.id}`} label="■" plain dimColor hover={{ color: pal?.red ?? RED }} onPress={() => stopTask($, x)} />
     const flagged = list.filter(needsAttention)
-    const summary = `≈${fmtCost(t.cost)}, ${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
+    const asked = await read($, need)
+    const summary = `${showCost ? `≈${fmtCost(t.cost)}, ` : ''}${fmtTokens(t.tokens)} ${s.tokensWord}, ${fmtTime(t.time)}`
 
     if (e.surface === 'desktop' && 'Svg' in ui) {
       const { Svg, Client } = ui
@@ -1825,6 +2052,7 @@ export const register: Register = (on, options) => {
           {text}
         </Text>
       )
+      const needLine = asked && <Svg key="need" source={flagSvg(W, needRow(asked))} alt={`Claude: ${s.needsInput}: ${asked.text}`} width={W} height={20} />
       const statusWord = (status: string) => (status === 'running' ? s.isRunning : status === 'failed' ? s.isFailed : status === 'planned' ? s.isPlanned : s.isFinished)
       // The most recent running agents loop, then the most recent background tasks; the rest hold.
       // Agents first: a long-lived server, or a task reconcile found (started "now"), is not work.
@@ -1867,6 +2095,7 @@ export const register: Register = (on, options) => {
         const icons = compactIcons(W, list, planned, a => looping.has(a))
         return (
           <Box flexDirection="column" gap={1}>
+            {needLine}
             <Box flexDirection="row">
               <Client key="icons" module="./mark.tsx" props={{ source: compactIconsSvg(icons.shown), alt: `${list.length} ${s.agentsCount}`, width: icons.width, height: 32 } satisfies MarkProps} />
               <Svg source={compactSvg(W - icons.width, icons.more, t)} alt={summary} width={W - icons.width} height={32} />
@@ -1896,7 +2125,7 @@ export const register: Register = (on, options) => {
         <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
       )
       const budget = budgetOf()
-      for (const el of [header, toggleDone]) budget.add(el, true)
+      for (const el of needLine ? [needLine, header, toggleDone] : [header, toggleDone]) budget.add(el, true)
       // Running cards first, then planned tasks, then background work; once one does not fit, the rest are a count.
       const runCards = budget.take(running, card)
       const isRunCut = runCards.length < running.length
@@ -1913,6 +2142,7 @@ export const register: Register = (on, options) => {
       const moreRun = section('more-run', s.moreRunning(moreRunning))
       return (
         <Box flexDirection="column">
+          {needLine}
           {header}
           {isEmpty && <Text dimColor>{s.empty}</Text>}
           {running.length > 0 && section('h-run', `${s.running} · ${running.length}`)}
@@ -1936,7 +2166,7 @@ export const register: Register = (on, options) => {
     const cols = Math.max(24, e.props.bodyColumns || 40)
     const barW = Math.max(6, Math.min(20, cols - 34))
     // Fixed white on RED (the palette's background on its red): the same contrast on any terminal theme.
-    const flagText = (a: AgentRun) => (
+    const flagText = (a: Flagged) => (
       <Text backgroundColor={pal?.red ?? RED} color={pal?.background ?? '#ffffff'} bold>
         {` ${flagOf(a)} `}
       </Text>
@@ -1999,6 +2229,11 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
+        {asked && (
+          <Text key="need" wrap="truncate-end">
+            {flagText(needRow(asked))} Claude — {asked.text}
+          </Text>
+        )}
         <Box flexDirection="row" justifyContent="space-between">
           <Text bold wrap="truncate-end">
             {title}
@@ -2070,7 +2305,8 @@ export const register: Register = (on, options) => {
     await paletteOf($)
     const f = await read($, flow)
     const list = await read($, agents)
-    const flagged = list.filter(needsAttention).length
+    // The main session's own question counts as one more.
+    const flagged = list.filter(needsAttention).length + ((await read($, need)) ? 1 : 0)
     // Never reads `now`: the band must not redraw on the clock's tick. Held runs carry their end time.
     const noFlowTitle = f === null ? bandTitle(null, list, 0) : ''
     // With no flow the band still shows up while any agent runs or is held, or one needs attention.
@@ -2125,7 +2361,8 @@ export const register: Register = (on, options) => {
             {titleRow}
             {crabRow}
             {chip}
-            {crewButton}
+            {/* A session need alone draws its chip, not a "0 agents" button. */}
+            {crew ? crewButton : null}
           </Box>
           {theirs}
         </Box>
