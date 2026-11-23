@@ -72,8 +72,10 @@ export type BackgroundTask = {
   endedAt?: number
   /** A cron's schedule: CronCreate's human wording, or the cron expression. */
   schedule?: string
-  /** A wakeup's fire time. */
+  /** A wakeup's fire time, or a cron's next run: CronCreate's `nextFireAt`, then CronList's at each stop. */
   nextAt?: number
+  /** A recurring cron's previous run (its scheduled time), once one has passed; a countdown runs from `lastAt ?? startedAt` to `nextAt`. */
+  lastAt?: number
 }
 
 /** The main session waiting on the person: the question, when it was asked, and how savvy heard it. */

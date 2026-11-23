@@ -50,15 +50,15 @@ The panel also lists background work that is not a subagent, under **Background 
 
 - **Shells**: a Bash command run in the background (`run_in_background`, or sent there with Ctrl+B), with its command and running time in whole minutes, "<1m" in the first, then "1m", "2m".
 - **Monitors**: the Monitor tool, with its description and running time, in the same minutes.
-- **Scheduled**: CronCreate jobs (a `/loop` on an interval included), with the prompt and the schedule, "every 5 minutes"; and ScheduleWakeup (a dynamic `/loop`), with the reason and a countdown, "next in 12m", or "due" once its time has passed.
+- **Scheduled**: CronCreate jobs (a `/loop` on an interval included), with the prompt and a countdown to the next run, "next in 4m", from the time CronCreate reports; and ScheduleWakeup (a dynamic `/loop`), with the reason and a countdown, "next in 12m". Either reads "due" once its time has passed. When Claude stops after a recurring job's run has passed, the panel asks CronList for its next run (one read-only call, which other mods' tool hooks also see; never between runs) and keeps the run that passed as `lastAt`, so another mod can draw the countdown between them. A job still waiting for a busy session stays "due". A job with no reported time shows its schedule; if CronList is refused, the row keeps its last time and reads "due".
 
-While no agent runs, running times and countdowns refresh once a minute, so a reading can be a minute behind; a cron alone refreshes nothing, as its schedule doesn't change.
+While no agent runs, running times and countdowns refresh once a minute, so a reading can be a minute behind; a cron that shows only its schedule refreshes nothing.
 
 Workflows and subagents are not listed here; their agents are already crabs. A background task never opens the panel by itself, and the compact panel leaves background rows out.
 
 Each running or scheduled row has a **Stop** button, a dim **■** that turns red on hover (ended rows don't); one press stops it, with no confirmation: TaskStop for a shell or a monitor, CronDelete for a cron job, ScheduleWakeup's `stop` for a dynamic `/loop`. If the call fails, the error is toasted and the row stays. Stop goes through Claude Code's normal permission check, so in some permission modes it may ask first or be refused.
 
-A task's completion notification moves it to **Ended** with its duration, and the **Ended · N** count includes it; a failed one gets a red **failed** label there (history only: no attention chip). When Claude stops, the panel matches its rows against the session's in-flight tasks and crons: it adds what it missed and ends what is gone. A row it adds counts its time from that stop, crons show the raw cron expression, and a monitor takes the type the engine lists it under, currently shell. A new, resumed or cleared session starts with an empty list, refilled at the next stop; a compaction keeps the list.
+A task's completion notification moves it to **Ended** with its duration, and the **Ended · N** count includes it; a failed one gets a red **failed** label there (history only: no attention chip). When Claude stops, the panel matches its rows against the session's in-flight tasks and crons: it adds what it missed and ends what is gone. A row it adds counts its time from that stop, crons show the raw cron expression and the next run CronList reports, and a monitor takes the type the engine lists it under, currently shell. A new, resumed or cleared session starts with an empty list, refilled at the next stop; a compaction keeps the list.
 
 ## Crab costumes
 

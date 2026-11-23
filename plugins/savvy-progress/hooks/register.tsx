@@ -1383,7 +1383,7 @@ ${rowLine(W - MARK_W, BG_H)}`,
 }
 
 // The clock ticks every second while an agent runs, every minute while only background
-// rows show a time (a cron shows its schedule), not at all otherwise. One timer: each
+// rows show a time (a cron without a next fire shows its schedule), not at all otherwise. One timer: each
 // change of pace calls retick where it happens, which cancels it before arming the next.
 // The calls run one at a time, so a call that read the state before a change cannot undo
 // the one made after it.
@@ -1397,7 +1397,7 @@ function retick($: EngineInterface): Promise<void> {
 async function repace($: EngineInterface): Promise<void> {
   const isRunning = (await read($, agents)).some(a => a.status === 'running')
   const bg = await read($, background)
-  const ms = isRunning ? 1000 : bg.some(t => isActive(t) && t.kind !== 'cron') ? 60_000 : 0
+  const ms = isRunning ? 1000 : bg.some(t => isActive(t) && (t.kind !== 'cron' || t.nextAt !== undefined)) ? 60_000 : 0
   if (ms === tickMs) return
   clockTick?.cancel()
   tickMs = ms
@@ -1502,12 +1502,31 @@ const isClipOf = (listed: string, prompt: string): boolean => {
   return kept === listed ? listed === prompt : prompt.startsWith(kept)
 }
 
+// An engine time worth counting down to: a positive, finite epoch ms.
+const isTime = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0
+
+// Each session cron's next run, as CronList reports it (the scheduler's own time, jitter and
+// all), null for a job it lists with no time; empty when the call is refused or fails, so a stop
+// never fails over it. Other mods' tool.call hooks see the call, so a stop makes it only when a
+// time can have changed.
+async function cronTimes($: EngineInterface): Promise<Map<string, number | null>> {
+  const times = new Map<string, number | null>()
+  try {
+    const r = await $.tool.call({ tool: 'CronList' } as never)
+    const jobs = r.deny === undefined && !r.isError ? (r.result as { jobs?: unknown } | undefined)?.jobs : undefined
+    for (const j of Array.isArray(jobs) ? (jobs as Record<string, unknown>[]) : []) if (str(j?.id)) times.set(str(j.id), isTime(j.nextFireAt) ? j.nextFireAt : null)
+  } catch {
+    // An unreadable list is no times.
+  }
+  return times
+}
+
 // What a call started in the background, from its input and its result; null when nothing.
 const startedTask = (e: Record<string, unknown>, r: Record<string, unknown>): Omit<BackgroundTask, 'startedAt'> | null => {
   if (e.tool === 'Bash' && str(r.backgroundTaskId)) return { id: str(r.backgroundTaskId), kind: 'shell', text: oneLine(e.command), status: 'running' }
   if (e.tool === 'Monitor' && str(r.taskId)) return { id: str(r.taskId), kind: 'monitor', text: oneLine(e.description) || oneLine(e.command), status: 'running' }
   if (e.tool === 'CronCreate' && str(r.id))
-    return { id: str(r.id), kind: 'cron', text: oneLine(e.prompt), status: 'scheduled', schedule: oneLine(r.humanSchedule) || oneLine(e.cron) }
+    return { id: str(r.id), kind: 'cron', text: oneLine(e.prompt), status: 'scheduled', schedule: oneLine(r.humanSchedule) || oneLine(e.cron), ...(isTime(r.nextFireAt) && { nextAt: r.nextFireAt }) }
   // scheduledFor 0: the wakeup could not be armed.
   if (e.tool === 'ScheduleWakeup' && typeof r.scheduledFor === 'number' && r.scheduledFor > 0 && !r.stopped)
     return { id: `wake:${oneLine(e.prompt)}`, kind: 'wakeup', text: oneLine(e.reason) || oneLine(e.prompt), status: 'scheduled', nextAt: r.scheduledFor }
@@ -1871,7 +1890,7 @@ export const register: Register = (on, options) => {
     const ids = new Set([...live.map(t => t.id), ...crons.map(c => c.id)])
     // A wakeup's row is keyed by its prompt, which the engine may have clipped.
     const isWakeOf = (id: string) => crons.some(c => isClipOf(oneLine(c.prompt), id.slice('wake:'.length)))
-    const reconcile = async (at: number) =>
+    const reconcile = async (at: number, times: Map<string, number | null>) =>
       setBackground($, list => {
         const known = new Set(list.map(t => t.id))
         const wakes = list.filter(t => t.kind === 'wakeup').map(t => t.id.slice('wake:'.length))
@@ -1884,10 +1903,29 @@ export const register: Register = (on, options) => {
             .map(c => ({ id: c.id, kind: 'cron' as const, text: oneLine(c.prompt), status: 'scheduled' as const, startedAt: at, schedule: oneLine(c.schedule) })),
         ]
         const isLive = (t: BackgroundTask) => ids.has(t.id) || (t.kind === 'wakeup' && isWakeOf(t.id))
-        return [...list.map(t => (isActive(t) && !isLive(t) ? { ...t, status: 'done' as const, endedAt: at } : t)), ...missed]
+        // A cron takes its next run from the engine, and a run that passed and was replaced becomes
+        // lastAt. A job due but not yet fired (the session was busy) lists as now: it stays due.
+        const timed = (t: BackgroundTask): BackgroundTask => {
+          const upcoming = t.kind === 'cron' && isActive(t) ? times.get(t.id) : undefined
+          if (upcoming === undefined || upcoming === t.nextAt || (upcoming !== null && upcoming <= at + 1000)) return t
+          if (upcoming === null) {
+            const { nextAt: _gone, ...rest } = t
+            return rest
+          }
+          return t.nextAt !== undefined && t.nextAt <= at && upcoming > t.nextAt ? { ...t, nextAt: upcoming, lastAt: t.nextAt } : { ...t, nextAt: upcoming }
+        }
+        return [...list.map(t => (isActive(t) && !isLive(t) ? { ...t, status: 'done' as const, endedAt: at } : timed(t))), ...missed.map(timed)]
       })
-    // Bookkeeping after the hooks have run: a failure here must not fail the stop.
-    await $.clock.now().then(reconcile).catch(() => undefined)
+    // Bookkeeping after the hooks have run: a failure here must not fail the stop. Only a
+    // recurring cron's next run moves (a wakeup's or a one-shot's is fixed when it is set), and
+    // only once it has passed, or when the row has no time yet or is new.
+    const sync = async (at: number) => {
+      const rows = await read($, background)
+      const row = (id: string) => rows.find(t => t.id === id && t.kind === 'cron' && isActive(t))
+      const isStale = (c: { id: string; recurring: boolean }) => c.recurring && (row(c.id)?.nextAt ?? 0) <= at
+      return reconcile(at, crons.some(isStale) ? await cronTimes($) : new Map())
+    }
+    await $.clock.now().then(sync).catch(() => undefined)
     return result
   })
 
