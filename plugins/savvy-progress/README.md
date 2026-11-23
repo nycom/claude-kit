@@ -110,4 +110,10 @@ While the skins mod has a dark skin on, its theme wins over the file, and a `/sk
 
 `statusWords`: string list, default `[]`, of `word=done`, `word=skip` or `word=<phase>` entries. When a watched file has no checkboxes, a block of `key: word` lines in which one word is configured becomes the tasks: each key is a task, `done` ticks it, `skip` leaves it out, and the furthest phase mapped by a task that is not done sets the phase (forward only). Empty: that shape is never read. Both options add no model tokens.
 
+On Claude Code 2.1.314 the list settings (`stages`, `watch`, `statusWords`) do not show as rows in `/config`. Set them in `settings.json` under `pluginConfigs`, keyed by the plugin name:
+
+```json
+{ "pluginConfigs": { "savvy-progress": { "options": { "watch": ["docs/plan.md"], "statusWords": ["finished=done"] } } } }
+```
+
 Install instructions are in the [repository README](../../README.md).
