@@ -75,6 +75,16 @@
       "title": "Status words",
       "description": "For a watched file without checkboxes: the words of its key: status lines, as word=done, word=skip or word=<phase>. Empty: such files are not read",
       "default": []
+    },
+    "stepBrief": {
+      "type": "string",
+      "title": "Step brief",
+      "description": "savvy: only savvy-* workers are asked to report steps. flow: also any agent whose description names a task of the unfinished flow; it reports only if its type can call the step tool. flow adds about 160 tokens per matched spawn",
+      "default": "savvy",
+      "options": [
+        "savvy",
+        "flow"
+      ]
     }
   },
   "homepage": "https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress",
