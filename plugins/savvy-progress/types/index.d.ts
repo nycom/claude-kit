@@ -14,7 +14,7 @@ export type Flow = {
   phase: Phase
   isFinished: boolean
   tasks: PlannedTask[]
-  /** Normalised titles of tasks known done; never shrinks, cleared when a new flow starts. */
+  /** Normalised titles of tasks known done; loses a title when work on that task restarts (not in a file flow), cleared when a new flow starts. */
   doneTitles?: string[]
   /** The watched file the flow was read from; absent for a flow reported through `progress`. */
   source?: string
