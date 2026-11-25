@@ -1,12 +1,17 @@
 # claude-kit
 
-My public skills and mods for [Claude Code](https://claude.com/claude-code), in one place. Every item is a standalone plugin under `plugins/`: install only what you need.
+My public skills and mods for [Claude Code](https://claude.com/claude-code), in one place. A fork of [johnnyvizz/claude-kit](https://github.com/johnnyvizz/claude-kit). Every item is a standalone plugin: install only what you need.
 
 | Plugin | Type | What it does |
 | --- | --- | --- |
 | [savvy-flow](plugins/savvy-flow) | skill + agents | `/savvy-flow <task>`: the session model plans, delegates to tiered worker subagents and reviews their work. |
 | [savvy-progress](plugins/savvy-progress) | mod | A progress bar above the prompt and a live agents panel. Made for savvy-flow, shows any subagents. |
 | [session-band](plugins/session-band) | mod | A band above the prompt: turn, speed, cost, prompt cache countdown and context; notifies before the cache expires. |
+| [skins](https://github.com/nycom/claude-skins) | mod | Skins for the transcript: themed tool rows, reply gutters and spinner words; `/skin` swaps them live. |
+| [filetree](https://github.com/data-goblin/claude-code-filetree) | mod | An IDE-style file tree that shows what Claude is doing, and where in files. |
+| [cache-tax](https://github.com/nycom/cache-tax) | mod | Keeps the one-hour prompt cache warm during breaks and warns once before a cold send. |
+| [clawpit](https://github.com/nycom/clawpit) | mod | An instrument panel above the prompt and a crew pane beside it, for the desktop app. Installs savvy-progress with it. |
+| [clawpit-gauges](https://github.com/nycom/clawpit#gauges-only) | mod | clawpit's gauges above the prompt, without the Agents pane. |
 
 savvy-flow and savvy-progress work on their own and light up together: with both installed, the flow drives the bar and workers report their progress to the panel.
 
@@ -14,27 +19,28 @@ savvy-flow and savvy-progress work on their own and light up together: with both
 
 ### From the marketplace
 
-In Claude Code:
-
-```
-/plugin marketplace add johnnyvizz/claude-kit
-/plugin install savvy-flow@claude-kit
-/plugin install savvy-progress@claude-kit
-```
-
-All four of Nati's mods (savvy-progress plus the forked skins, filetree and cache-tax):
+In Claude Code, add the marketplace, then run the lines for the plugins you want:
 
 ```
 /plugin marketplace add nycom/claude-kit
-/plugin install savvy-progress@claude-kit skins@claude-kit filetree@claude-kit cache-tax@claude-kit
+/plugin install savvy-flow@claude-kit
+/plugin install savvy-progress@claude-kit
+/plugin install session-band@claude-kit
+/plugin install skins@claude-kit
+/plugin install filetree@claude-kit
+/plugin install cache-tax@claude-kit
+/plugin install clawpit@claude-kit
+/plugin install clawpit-gauges@claude-kit
 ```
+
+clawpit is also published by its own marketplace: never enable `clawpit@claude-kit` and `clawpit@clawpit` together.
 
 Restart the session afterwards. Plugin skills and agents are namespaced: the skill is `/savvy-flow:savvy-flow`, the agents `savvy-flow:savvy-careful` and so on.
 
 ### By hand
 
 ```bash
-git clone https://github.com/johnnyvizz/claude-kit.git ~/claude-kit
+git clone https://github.com/nycom/claude-kit.git ~/claude-kit
 ```
 
 **A skill** (no plugin system involved, names stay short: `/savvy-flow`, `savvy-careful`): copy its folders into your Claude Code config.
@@ -65,7 +71,7 @@ or for every session (including the desktop app) through `env` in `~/.claude/set
 
 `git pull` in the clone updates a mod loaded this way; copied skills need copying again.
 
-Mods are built on function hooks (`hooks/register.tsx`), an early-access Claude Code API: tested on Claude Code 2.1.286, and it may change between releases. If a mod installed from the marketplace does not show up, load it by hand as above.
+Mods are built on function hooks (`hooks/register.tsx`), an early-access Claude Code API: CI checks them on Claude Code 2.1.330, and the API may change between releases. If a mod installed from the marketplace does not show up, load it by hand as above.
 
 ## Try it
 

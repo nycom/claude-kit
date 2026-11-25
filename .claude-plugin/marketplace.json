@@ -29,7 +29,8 @@
       "name": "filetree",
       "source": {
         "source": "github",
-        "repo": "nycom/claude-code-filetree"
+        "repo": "data-goblin/claude-code-filetree",
+        "ref": "v0.8.5"
       },
       "description": "Mod: IDE-style file tree that shows what Claude is doing and where in files.",
       "category": "mod"
@@ -47,6 +48,27 @@
       "name": "session-band",
       "source": "./plugins/session-band",
       "description": "Mod: band above the prompt with turn, speed, cost, prompt cache countdown and context; notifies before the cache expires.",
+      "category": "mod"
+    },
+    {
+      "name": "clawpit",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/nycom/clawpit.git",
+        "path": "plugin"
+      },
+      "description": "Mod: an instrument panel above the prompt and a crew pane beside it, for the Claude Code desktop app.",
+      "dependencies": ["savvy-progress"],
+      "category": "mod"
+    },
+    {
+      "name": "clawpit-gauges",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/nycom/clawpit.git",
+        "path": "gauges"
+      },
+      "description": "Mod: clawpit's gauges above the prompt without the Agents pane: context, the 5-hour and 7-day limits and session cost.",
       "category": "mod"
     }
   ]
