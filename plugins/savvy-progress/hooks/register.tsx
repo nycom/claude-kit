@@ -698,19 +698,39 @@ const stageOf = (titles: string[], description: string): { task: string; word: s
   return task === undefined ? undefined : { task, word: norm(description).slice(task.length).trim().split(' ')[0] ?? '' }
 }
 const isFinishing = (a: AgentRun): boolean => stages[norm(a.description).split(' ').pop() ?? '']?.isFinish === true
+// A configured word that neither ticks nor finishes: such an agent works on its task.
+const isWorkStage = (word: string): boolean => {
+  const stage = stages[word]
+  return !!stage?.phase && !stage.isDone && !stage.isFinish
+}
 
-// `run` is the agent that just spawned or ended. Phase only moves forward, done never drops.
+// `run` is the agent that just spawned or ended. Phase only moves forward; done drops only when work
+// starts again on a ticked task (a merge that was sent back).
 const autoFlow = (f: Flow | null, list: AgentRun[], run: AgentRun | undefined): Flow | null => {
   if (!f || f.isFinished || !f.tasks?.length || !run) return f
   const titles = f.tasks.map(t => t.title)
   if (run.status === 'running') {
-    const phase = stages[stageOf(titles, run.description)?.word ?? '']?.phase
-    return phase && PHASES.indexOf(phase) > PHASES.indexOf(f.phase) ? { ...f, phase } : f
+    const at = stageOf(titles, run.description)
+    const phase = stages[at?.word ?? '']?.phase
+    const moved = phase && PHASES.indexOf(phase) > PHASES.indexOf(f.phase) ? { ...f, phase } : f
+    // A file's checked boxes stand.
+    if (f.source || !at || !isWorkStage(at.word) || !f.doneTitles?.includes(at.task)) return moved
+    return { ...moved, done: Math.max(0, f.done - 1), doneTitles: f.doneTitles.filter(t => t !== at.task) }
   }
   // A file flow counts its checked boxes only: an agent that ends can neither lift nor finish it.
   if (f.source) return f
-  // A title once known done stays done, even after its agent leaves the list.
-  const merged = new Set([...(f.doneTitles ?? []), ...list.filter(a => a.status === 'done').map(a => stageOf(titles, a.description)).filter(s => s && stages[s.word]?.isDone).map(s => s?.task)])
+  // A ticked title stays ticked after its agent leaves the list. A +done agent still listed ticks only
+  // if no work on its task started after it ended.
+  const isRedone = (task: string, since: number) =>
+    list.some(a => {
+      const at = stageOf(titles, a.description)
+      return at?.task === task && isWorkStage(at.word) && a.startedAt > since
+    })
+  const ticked = list.filter(a => {
+    const at = a.status === 'done' ? stageOf(titles, a.description) : undefined
+    return at && stages[at.word]?.isDone && !isRedone(at.task, a.endedAt ?? Infinity)
+  })
+  const merged = new Set([...(f.doneTitles ?? []), ...ticked.map(a => stageOf(titles, a.description)?.task)])
   const doneTitles = [...merged] as string[]
   const done = Math.max(f.done, Math.min(f.total, merged.size))
   const isFinished =

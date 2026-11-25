@@ -47,6 +47,19 @@ test('custom stage words move the phase, tick a task and finish the flow', { opt
   expect(await band($)).toBe('Ship it: Done, 100%')
 })
 
+test('under a custom list only its working words take a tick back', { options: { stages: CUSTOM } }, async ($, on) => {
+  const clock = setup(on)
+  await plan($)
+  await spawn($, 'a integrate') // w1
+  await end($, 'w1')
+  await clock.advance(1_000)
+  await spawn($, 'a notes') // w2: +finish
+  await spawn($, 'a fix c2') // w3: not a word here
+  expect(await band($)).toBe('Ship it: Tasks 1/2, 50%')
+  await spawn($, 'a build') // w4
+  expect(await band($)).toBe('Ship it: Tasks 0/2, 0%')
+})
+
 test('under a custom list the default words move nothing', { options: { stages: CUSTOM } }, async ($, on) => {
   setup(on)
   await plan($)

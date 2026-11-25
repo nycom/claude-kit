@@ -161,3 +161,94 @@ test('a done task stays out of Planned and in doneTitles after its agent leaves 
   expect(seen).toMatchObject({ done: 2, doneTitles: ['c', 'a'] })
   expect(await crew()).toBe('201 agents') // 200 listed + b planned
 })
+
+// The flow atom as last written.
+const flowOf = (on: Parameters<typeof setup>[0]) => {
+  let seen: { done?: number; doneTitles?: string[] } | undefined
+  on('state.set', (_$, e, next) => ((e as { key?: string }).key === 'flow' && (seen = (e as { value?: typeof seen }).value), next(e)))
+  return () => seen
+}
+
+test('work on a ticked task takes the tick back, and a later merge gives it again', async ($, on) => {
+  const clock = setup(on)
+  const seen = flowOf(on)
+  await plan($)
+  await spawn($, 'a merge') // w1
+  await end($, 'w1')
+  expect(seen()).toMatchObject({ done: 1, doneTitles: ['a'] })
+  await clock.advance(1_000)
+  await spawn($, 'a fix c2') // w2: the merge was sent back
+  expect(seen()).toMatchObject({ done: 0, doneTitles: [] })
+  expect(await band($)).toBe('Ship it: Tasks 0/2, 0%')
+  // Neither the fix ending nor another agent ending counts the old merge again.
+  await end($, 'w2')
+  await spawn($, 'b review c1') // w3
+  await end($, 'w3')
+  expect(seen()).toMatchObject({ done: 0, doneTitles: [] })
+  await clock.advance(1_000)
+  await spawn($, 'a merge') // w4
+  await end($, 'w4')
+  expect(seen()).toMatchObject({ done: 1, doneTitles: ['a'] })
+})
+
+test('only work on that task takes its tick: a shared check or a docs agent keeps it', async ($, on) => {
+  const clock = setup(on)
+  const seen = flowOf(on)
+  await plan($)
+  await spawn($, 'a merge') // w1
+  await end($, 'w1')
+  await spawn($, 'b merge') // w2
+  await end($, 'w2')
+  await clock.advance(1_000)
+  await spawn($, 'a shared check m1') // w3
+  await spawn($, 'a docs') // w4
+  expect(seen()).toMatchObject({ done: 2, doneTitles: ['a', 'b'] })
+  await end($, 'w3')
+  expect(seen()).toMatchObject({ done: 2, doneTitles: ['a', 'b'] })
+  await spawn($, 'b fix c2') // w5
+  expect(seen()).toMatchObject({ done: 1, doneTitles: ['a'] })
+  // A merge counted late, its task planned after it ended, is not held back by another task's work.
+  await spawn($, 'c merge') // w6
+  await end($, 'w6')
+  await clock.advance(1_000)
+  await spawn($, 'b review c2') // w7
+  await $.tool.call({ tool: 'mcp__savvy-progress__progress', total: 3, tasks: [{ title: 'a' }, { title: 'b' }, { title: 'c' }] } as never)
+  await end($, 'w7')
+  expect(seen()).toMatchObject({ done: 2, doneTitles: ['a', 'c'] })
+})
+
+// 200 agents: over the 5 s default on a slow CI machine.
+test('a tick given again stays after its agents leave the list', { timeoutMs: 20000 } as never, async ($, on) => {
+  const clock = setup(on)
+  const seen = flowOf(on)
+  await plan($)
+  await spawn($, 'a merge') // w1
+  await end($, 'w1')
+  await clock.advance(1_000)
+  await spawn($, 'a fix c2') // w2
+  expect(seen()).toMatchObject({ done: 0, doneTitles: [] })
+  await end($, 'w2')
+  await clock.advance(1_000)
+  await spawn($, 'a merge') // w3
+  await end($, 'w3')
+  for (let i = 4; i <= 203; i++) {
+    await spawn($, `filler ${i}`)
+    await end($, `w${i}`)
+  }
+  expect(seen()).toMatchObject({ done: 1, doneTitles: ['a'] })
+})
+
+test('work on a task ticked in a file flow leaves it ticked', { options: { watch: ['plan.md'] } }, async ($, on) => {
+  const clock = setup(on)
+  const seen = flowOf(on)
+  on('fs.read', () => ({ value: '- [x] a\n- [ ] b\n' }))
+  on('session.cwd', () => ({ value: '/w' }))
+  on('tool.call', { tool: 'Edit' }, () => ({ result: 'written' }) as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/w/plan.md', old_string: 'a', new_string: 'b' } as never)
+  expect(seen()).toMatchObject({ done: 1, doneTitles: ['a'] })
+  await clock.advance(1_000)
+  await spawn($, 'a fix c2') // w1
+  expect(seen()).toMatchObject({ done: 1, doneTitles: ['a'] })
+  await end($, 'w1')
+  expect(seen()).toMatchObject({ done: 1, doneTitles: ['a'] })
+})
