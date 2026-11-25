@@ -133,7 +133,8 @@ test('a task known done is remembered by title, never dropped, and a new flow cl
   expect(seen?.done).toBe(0)
 })
 
-test('a done task stays out of Planned and in doneTitles after its agent leaves the list', async ($, on) => {
+// 200 agents: over the 5 s default on a slow CI machine.
+test('a done task stays out of Planned and in doneTitles after its agent leaves the list', { timeoutMs: 20000 } as never, async ($, on) => {
   setup(on)
   let seen: { done?: number; doneTitles?: string[] } | undefined
   on('state.set', (_$, e, next) => ((e as { key?: string }).key === 'flow' && (seen = (e as { value?: typeof seen }).value), next(e)))

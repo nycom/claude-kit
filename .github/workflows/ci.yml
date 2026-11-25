@@ -7,8 +7,7 @@ permissions:
   contents: read
 jobs:
   checks:
-    # One test spawns 200 agents and the runner's 5 s cap per test cannot be raised; the Linux runner needs longer.
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
