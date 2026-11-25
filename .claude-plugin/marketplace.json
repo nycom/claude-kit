@@ -19,8 +19,8 @@
     {
       "name": "skins",
       "source": {
-        "source": "github",
-        "repo": "nycom/claude-skins"
+        "source": "url",
+        "url": "https://github.com/nycom/claude-skins.git"
       },
       "description": "Mod: skins for the transcript: themed tool rows, reply gutters and spinner words; /skin swaps them live.",
       "category": "mod"
@@ -28,8 +28,8 @@
     {
       "name": "filetree",
       "source": {
-        "source": "github",
-        "repo": "data-goblin/claude-code-filetree",
+        "source": "url",
+        "url": "https://github.com/data-goblin/claude-code-filetree.git",
         "ref": "v0.8.5"
       },
       "description": "Mod: IDE-style file tree that shows what Claude is doing and where in files.",
@@ -38,8 +38,8 @@
     {
       "name": "cache-tax",
       "source": {
-        "source": "github",
-        "repo": "nycom/cache-tax"
+        "source": "url",
+        "url": "https://github.com/nycom/cache-tax.git"
       },
       "description": "Mod: keeps the one-hour prompt cache warm during breaks and warns once before a cold send.",
       "category": "mod"
